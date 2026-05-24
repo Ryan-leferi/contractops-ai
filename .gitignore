@@ -1,0 +1,27 @@
+# Dependencies
+node_modules/
+
+# Next.js build output
+.next/
+**/.next/
+
+# Build outputs
+dist/
+build/
+**/dist/
+**/build/
+
+# Test artifacts
+test-results/
+playwright-report/
+**/test-results/
+**/playwright-report/
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# OS
+.DS_Store
+Thumbs.db

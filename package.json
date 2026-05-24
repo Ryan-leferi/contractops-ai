@@ -1,0 +1,21 @@
+{
+  "name": "contractops-ai",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "fixture": "tsx scripts/run-fixture.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.5.4",
+    "vitest": "^2.0.5"
+  }
+}

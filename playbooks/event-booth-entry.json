@@ -1,0 +1,67 @@
+{
+  "id": "playbook_event_booth_entry",
+  "contract_type": "Event Booth Entry",
+  "contract_family": "event",
+  "legal_characterization": "행사 부스 입점계약 — 행사 운영자가 부스 공간 및 운영 서비스 제공",
+  "required_intake_questions": [
+    { "key": "event_name", "text": "행사명은 무엇입니까?", "required": true },
+    { "key": "event_dates", "text": "행사 일자는 언제입니까?", "required": true },
+    { "key": "venue", "text": "행사 장소는 어디입니까?", "required": true },
+    { "key": "booth_type", "text": "부스 유형(예: 기본/프리미엄)은 무엇입니까?", "required": true },
+    { "key": "fee_total", "text": "참가비 총액은 얼마입니까?", "required": true },
+    { "key": "on_site_sales_allowed", "text": "현장 판매가 허용됩니까?", "required": true }
+  ],
+  "optional_intake_questions": [
+    { "key": "sponsor_benefits", "text": "스폰서 혜택이 포함됩니까?", "required": false }
+  ],
+  "default_table_of_contents": [
+    "제1조 (목적)",
+    "제2조 (행사 개요)",
+    "제3조 (부스 사용)",
+    "제4조 (참가비 및 지급)",
+    "제5조 (입점자의 의무)",
+    "제6조 (주최자의 의무)",
+    "제7조 (취소·환불)",
+    "제8조 (위약금 및 손해배상)",
+    "제9조 (불가항력)",
+    "제10조 (분쟁해결)"
+  ],
+  "mandatory_clauses": [
+    { "key": "booth_use", "heading": "부스 사용 범위 및 제한" },
+    { "key": "fee", "heading": "참가비 및 지급" },
+    { "key": "refund", "heading": "취소·환불 정책" },
+    { "key": "penalty", "heading": "위약금 및 손해배상" }
+  ],
+  "optional_clauses": [
+    { "key": "on_site_sales", "heading": "현장 판매 허용 여부" },
+    { "key": "sponsor_benefit", "heading": "스폰서 혜택" }
+  ],
+  "common_risks": [
+    "취소 시점별 환불율 누락",
+    "부스 유형별 권리 차이 누락",
+    "현장 판매 허용 여부 모호"
+  ],
+  "red_flags": [
+    "무조건 비환불 조항",
+    "주최자 면책 범위 과대"
+  ],
+  "source_document_expectations": [
+    "행사 안내문, 부스 운영 가이드, 견적서/제안서"
+  ],
+  "drafting_style_notes": [
+    "환불 일정 표 형태로 명확화",
+    "부스 유형별 권리 분리 기재"
+  ],
+  "negotiation_positions": [
+    "환불 일정: 행사 30일 전 100%, 14일 전 50%, 이후 0%"
+  ],
+  "fallback_clauses": [
+    { "key": "refund_fallback", "heading": "환불 일정 양보안 — 행사 7일 전 30%" }
+  ],
+  "final_qa_checklist": [
+    "행사일·장소 일관성",
+    "참가비 금액·통화·VAT 일관성",
+    "현장 판매 허용 여부 명시"
+  ],
+  "is_custom_marker": false
+}

@@ -1,0 +1,30 @@
+{
+  "id": "playbook_custom_contract",
+  "contract_type": "Custom Contract",
+  "contract_family": "custom",
+  "legal_characterization": "정형화되지 않은 계약 — 사안별로 변호사가 정의",
+  "required_intake_questions": [
+    { "key": "counterparty_name", "text": "상대방 명칭은 무엇입니까?", "required": true },
+    { "key": "transaction_summary", "text": "거래 요지를 기술해 주십시오.", "required": true }
+  ],
+  "optional_intake_questions": [],
+  "default_table_of_contents": [],
+  "mandatory_clauses": [],
+  "optional_clauses": [],
+  "common_risks": [
+    "정형 Playbook 부재로 인한 검토 누락 위험"
+  ],
+  "red_flags": [],
+  "source_document_expectations": [
+    "거래 요지와 권리·의무가 기재된 자료"
+  ],
+  "drafting_style_notes": [
+    "변호사 승인된 Drafting Plan을 기초로 한다"
+  ],
+  "negotiation_positions": [],
+  "fallback_clauses": [],
+  "final_qa_checklist": [
+    "Drafting Plan과의 부합 여부"
+  ],
+  "is_custom_marker": true
+}

@@ -1,0 +1,50 @@
+{
+  "name": "Synthetic Event Booth fixture",
+  "description": "Wholly synthetic event-booth scenario for end-to-end workflow validation. No real counterparty names, no real BOF facts, no confidential source text. This file may be loaded by the CLI harness and Playwright; it must NOT be seeded as the default UI state. See ADR-009 in docs/08_ARCHITECTURE_DECISIONS.md.",
+  "project_name": "Synthetic Booth Project Q1",
+  "contract_type": "Event Booth Entry",
+  "source_documents": [
+    {
+      "file_name": "synthetic_event_announcement.pdf",
+      "source_type": "proposal",
+      "version": "1",
+      "incorporated": true,
+      "source_priority": 1
+    },
+    {
+      "file_name": "synthetic_booth_operation_guide.pdf",
+      "source_type": "operation_guide",
+      "version": "1",
+      "incorporated": true,
+      "source_priority": 2
+    },
+    {
+      "file_name": "synthetic_quote.xlsx",
+      "source_type": "quote",
+      "version": "1",
+      "incorporated": true,
+      "source_priority": 3
+    },
+    {
+      "file_name": "synthetic_counterparty_email.eml",
+      "source_type": "email",
+      "version": "1",
+      "incorporated": false,
+      "source_priority": 4
+    }
+  ],
+  "intake_answers": {
+    "event_name": "Synthetic Industry Expo 2027",
+    "event_dates": "2027-05-01 ~ 2027-05-03",
+    "venue": "Synthetic Convention Center, Building A",
+    "booth_type": "Premium A",
+    "fee_total": "12,000,000 KRW (VAT excluded)",
+    "on_site_sales_allowed": "Not allowed"
+  },
+  "issue_decisions": [
+    { "match": "first_critical", "decision": "rejected" },
+    { "match": "first_high", "decision": "accepted" },
+    { "match": "first_medium", "decision": "partially_accepted", "partial_note": "Acceptable with refund schedule cap at 70%" },
+    { "match": "default", "decision": "accepted" }
+  ]
+}

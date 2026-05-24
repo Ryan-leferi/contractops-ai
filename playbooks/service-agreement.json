@@ -1,0 +1,69 @@
+{
+  "id": "playbook_service_agreement",
+  "contract_type": "Service Agreement",
+  "contract_family": "service",
+  "legal_characterization": "업무위탁계약 — 수탁자가 일정 업무를 수행하고 위탁자가 그 대가를 지급",
+  "required_intake_questions": [
+    { "key": "counterparty_name", "text": "수탁자 명칭은 무엇입니까?", "required": true },
+    { "key": "scope", "text": "위탁 업무 범위는 무엇입니까?", "required": true },
+    { "key": "fee_total", "text": "총 위탁료는 얼마입니까?", "required": true },
+    { "key": "payment_schedule", "text": "지급 일정은 어떻게 됩니까?", "required": true },
+    { "key": "term_start", "text": "계약 시작일은 언제입니까?", "required": true },
+    { "key": "term_end", "text": "계약 종료일은 언제입니까?", "required": true }
+  ],
+  "optional_intake_questions": [
+    { "key": "sla", "text": "SLA 또는 산출물 기준이 있습니까?", "required": false }
+  ],
+  "default_table_of_contents": [
+    "제1조 (목적)",
+    "제2조 (위탁업무의 범위)",
+    "제3조 (계약기간)",
+    "제4조 (위탁료 및 지급방법)",
+    "제5조 (수탁자의 의무)",
+    "제6조 (위탁자의 의무)",
+    "제7조 (비밀유지)",
+    "제8조 (지식재산권)",
+    "제9조 (손해배상)",
+    "제10조 (계약 해지)",
+    "제11조 (분쟁해결)"
+  ],
+  "mandatory_clauses": [
+    { "key": "scope", "heading": "위탁업무의 범위" },
+    { "key": "fee", "heading": "위탁료 및 지급" },
+    { "key": "term", "heading": "계약기간" },
+    { "key": "termination", "heading": "해지" }
+  ],
+  "optional_clauses": [
+    { "key": "ip_assignment", "heading": "산출물 지식재산권 귀속" },
+    { "key": "sla", "heading": "서비스 수준 약정(SLA)" }
+  ],
+  "common_risks": [
+    "산출물 인수기준의 모호함",
+    "지식재산권 귀속 불명확",
+    "재위탁(하도급) 통제 부재"
+  ],
+  "red_flags": [
+    "무제한 손해배상",
+    "선급금 비중 과다"
+  ],
+  "source_document_expectations": [
+    "제안서/견적서, 업무 범위 명세서"
+  ],
+  "drafting_style_notes": [
+    "'하여야 한다', '할 수 있다' 표준 사용",
+    "'결과손해' 대신 '간접손해 또는 특별손해'"
+  ],
+  "negotiation_positions": [
+    "지식재산권 위탁자 귀속 원칙",
+    "손해배상 한도: 위탁료 총액 기준 100%"
+  ],
+  "fallback_clauses": [
+    { "key": "damage_cap_fallback", "heading": "손해배상 한도 양보안 — 위탁료 200%" }
+  ],
+  "final_qa_checklist": [
+    "위탁료 금액·통화·세금 처리 일관성",
+    "기간(시작/종료/갱신) 일관성",
+    "재위탁 조항 포함 여부"
+  ],
+  "is_custom_marker": false
+}
