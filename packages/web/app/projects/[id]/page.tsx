@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useStore, useProjectAudits } from "@/components/store-provider";
 import { AuditLogPanel } from "@/components/audit-log-panel";
+import { AgentRunsPanel } from "@/components/agent-runs-panel";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { formatDateTime } from "@/lib/utils";
@@ -90,7 +91,8 @@ export default function ProjectOverviewPage() {
           </CardContent>
         </Card>
       </div>
-      <div>
+      <div className="space-y-4">
+        <AgentRunsPanel runs={state.agent_runs} />
         <AuditLogPanel logs={audits} />
       </div>
     </div>

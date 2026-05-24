@@ -23,6 +23,7 @@ describe("selectProvider", () => {
       ANTHROPIC_API_KEY: null,
       GOOGLE_API_KEY: null,
       LLM_PROVIDER_ALLOWLIST: ["openai"],
+      OPENAI_MODEL: null,
       LLM_LOG_PROMPTS: false,
     });
     expect(p.mode).toBe("mock");
@@ -36,22 +37,69 @@ describe("selectProvider", () => {
         ANTHROPIC_API_KEY: null,
         GOOGLE_API_KEY: null,
         LLM_PROVIDER_ALLOWLIST: [],
-        LLM_LOG_PROMPTS: false,
+        OPENAI_MODEL: null,
+      LLM_LOG_PROMPTS: false,
       }),
     ).toThrowError(ProviderRealModeNotConfiguredError);
   });
 
-  it("throws when USE_REAL_LLM=true even with allowlist (no real impl yet)", () => {
+  it("throws when USE_REAL_LLM=true + openai on allowlist but OPENAI_API_KEY is missing", () => {
+    expect(() =>
+      selectProvider({
+        USE_REAL_LLM: true,
+        OPENAI_API_KEY: null,
+        ANTHROPIC_API_KEY: null,
+        GOOGLE_API_KEY: null,
+        LLM_PROVIDER_ALLOWLIST: ["openai"],
+        OPENAI_MODEL: null,
+        LLM_LOG_PROMPTS: false,
+      }),
+    ).toThrowError(/OPENAI_API_KEY is not set/);
+  });
+
+  it("throws when USE_REAL_LLM=true with unrecognized provider on allowlist", () => {
     expect(() =>
       selectProvider({
         USE_REAL_LLM: true,
         OPENAI_API_KEY: "sk-fake",
-        ANTHROPIC_API_KEY: null,
+        ANTHROPIC_API_KEY: "sk-fake",
         GOOGLE_API_KEY: null,
-        LLM_PROVIDER_ALLOWLIST: ["openai"],
+        LLM_PROVIDER_ALLOWLIST: ["anthropic"],
+        OPENAI_MODEL: null,
         LLM_LOG_PROMPTS: false,
       }),
-    ).toThrowError(/no real provider implementation is registered/);
+    ).toThrowError(/no supported provider on allowlist/);
+  });
+
+  it("returns an OpenAI provider when USE_REAL_LLM=true + openai allowlisted + key set", () => {
+    // This does NOT make a network call — instantiating the SDK is cheap and
+    // safe. We never call provider.completeJson here.
+    const p = selectProvider({
+      USE_REAL_LLM: true,
+      OPENAI_API_KEY: "sk-fake-for-test-only",
+      ANTHROPIC_API_KEY: null,
+      GOOGLE_API_KEY: null,
+      LLM_PROVIDER_ALLOWLIST: ["openai"],
+      OPENAI_MODEL: "gpt-4o-mini",
+      LLM_LOG_PROMPTS: false,
+    });
+    expect(p.provider_id).toBe("openai");
+    expect(p.mode).toBe("real");
+    expect(p.model_id).toBe("gpt-4o-mini");
+  });
+
+  it("mock mode wins even when an API key is present (no silent escalation)", () => {
+    const p = selectProvider({
+      USE_REAL_LLM: false,
+      OPENAI_API_KEY: "sk-fake",
+      ANTHROPIC_API_KEY: null,
+      GOOGLE_API_KEY: null,
+      LLM_PROVIDER_ALLOWLIST: ["openai"],
+      OPENAI_MODEL: "gpt-4o-mini",
+      LLM_LOG_PROMPTS: false,
+    });
+    expect(p.mode).toBe("mock");
+    expect(p.provider_id).toBe("mock");
   });
 });
 

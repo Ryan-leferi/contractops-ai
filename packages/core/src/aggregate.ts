@@ -41,7 +41,7 @@ import {
   lockSourcePack,
 } from "./source";
 import { emptyProjectState, type ProjectState } from "./state";
-import type { AggregateContext } from "./agg-context";
+import { resolveProvider, type AggregateContext } from "./agg-context";
 import {
   runContractDrafter,
   runCounterpartyReviewer,
@@ -309,7 +309,7 @@ export async function aggDraftDealMemo(
   if (!state.playbook) throw new Error("playbook missing despite intake_in_progress status");
 
   const result = await runDealMemoDrafter({
-    provider: ctx.provider,
+    provider: resolveProvider(ctx, "deal_memo_drafter"),
     env: ctx.env,
     input: {
       project_id: state.project.id,
@@ -377,7 +377,7 @@ export async function aggDraftDraftingPlan(
   if (!state.playbook) throw new Error("playbook missing despite deal_memo_approved status");
 
   const result = await runDraftingPlanDrafter({
-    provider: ctx.provider,
+    provider: resolveProvider(ctx, "drafting_plan_drafter"),
     env: ctx.env,
     input: {
       project_id: state.project.id,
@@ -446,7 +446,7 @@ export async function aggCreateV0(
   }
 
   const result = await runContractDrafter({
-    provider: ctx.provider,
+    provider: resolveProvider(ctx, "contract_drafter"),
     env: ctx.env,
     input: {
       project_id: state.project.id,
@@ -537,9 +537,21 @@ export async function aggRunMockReviews(
   };
 
   const [counterRes, sourceRes, styleRes] = await Promise.all([
-    runCounterpartyReviewer({ provider: ctx.provider, env: ctx.env, input: reviewerInput }),
-    runSourceConsistencyReviewer({ provider: ctx.provider, env: ctx.env, input: reviewerInput }),
-    runLegalStyleReviewer({ provider: ctx.provider, env: ctx.env, input: reviewerInput }),
+    runCounterpartyReviewer({
+      provider: resolveProvider(ctx, "counterparty_reviewer"),
+      env: ctx.env,
+      input: reviewerInput,
+    }),
+    runSourceConsistencyReviewer({
+      provider: resolveProvider(ctx, "source_consistency_reviewer"),
+      env: ctx.env,
+      input: reviewerInput,
+    }),
+    runLegalStyleReviewer({
+      provider: resolveProvider(ctx, "legal_style_reviewer"),
+      env: ctx.env,
+      input: reviewerInput,
+    }),
   ]);
 
   const allRuns: AgentRun[] = [counterRes.agent_run, sourceRes.agent_run, styleRes.agent_run];
@@ -626,7 +638,7 @@ export async function aggCreateRevision(
   );
 
   const result = await runRevisionAgent({
-    provider: ctx.provider,
+    provider: resolveProvider(ctx, "revision_agent"),
     env: ctx.env,
     input: {
       project_id: state.project.id,
@@ -706,7 +718,7 @@ export async function aggRunMockFinalQA(
   if (!latest) throw new Error("no version for final QA");
 
   const result = await runFinalQAAssistant({
-    provider: ctx.provider,
+    provider: resolveProvider(ctx, "final_qa_assistant"),
     env: ctx.env,
     input: {
       project_id: state.project.id,

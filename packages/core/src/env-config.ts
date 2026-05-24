@@ -14,6 +14,8 @@ export interface EnvConfig {
   OPENAI_API_KEY: string | null;
   ANTHROPIC_API_KEY: string | null;
   GOOGLE_API_KEY: string | null;
+  /** Default OpenAI model id used by createOpenAIProvider. Null → provider default. */
+  OPENAI_MODEL: string | null;
   /**
    * Comma-separated provider ids that are permitted in real mode (e.g. "openai,anthropic").
    * If empty, no real provider is allowed even with USE_REAL_LLM=true.
@@ -47,6 +49,7 @@ export function readEnvConfig(env: EnvSource = (typeof process !== "undefined" ?
     OPENAI_API_KEY: env.OPENAI_API_KEY?.trim() || null,
     ANTHROPIC_API_KEY: env.ANTHROPIC_API_KEY?.trim() || null,
     GOOGLE_API_KEY: env.GOOGLE_API_KEY?.trim() || null,
+    OPENAI_MODEL: env.OPENAI_MODEL?.trim() || null,
     LLM_PROVIDER_ALLOWLIST: parseList(env.LLM_PROVIDER_ALLOWLIST),
     LLM_LOG_PROMPTS: parseBool(env.LLM_LOG_PROMPTS, false),
   };
@@ -57,6 +60,7 @@ export const DEFAULT_ENV_CONFIG: EnvConfig = {
   OPENAI_API_KEY: null,
   ANTHROPIC_API_KEY: null,
   GOOGLE_API_KEY: null,
+  OPENAI_MODEL: null,
   LLM_PROVIDER_ALLOWLIST: [],
   LLM_LOG_PROMPTS: false,
 };

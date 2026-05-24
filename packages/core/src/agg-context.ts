@@ -1,4 +1,4 @@
-import type { Actor } from "@contractops/schemas";
+import type { Actor, AgentRole } from "@contractops/schemas";
 import { DEFAULT_ENV_CONFIG, type EnvConfig } from "./env-config";
 import { createCounterIdGenerator, createFixedClock, type Env } from "./env";
 import type { LLMProvider } from "./provider";
@@ -7,19 +7,30 @@ import { createMockProvider } from "./providers/mock-provider";
 /**
  * AggregateContext bundles everything an agent-backed aggregate op needs:
  *
- *   - `provider`     — the LLMProvider to call (mock by default)
+ *   - `provider`     — default LLMProvider (mock unless explicitly real)
+ *   - `getProvider?` — optional per-role override (e.g. route only
+ *                      deal_memo_drafter to a real provider in Milestone 2C
+ *                      while keeping the other 6 roles on mock)
  *   - `env_config`   — environment switches (USE_REAL_LLM, allowlist, etc.)
  *   - `env`          — id generator + clock
  *   - `actor`        — who initiated this aggregate call (for audit attribution)
  *
- * Callers that don't use any of these (e.g. createProject) can still construct
- * a context for uniformity, but sync ops accept a plain `Env` and need no ctx.
+ * Aggregate ops resolve their provider via:
+ *     ctx.getProvider?.(role) ?? ctx.provider
+ *
+ * Sync ops (no agent) accept a plain `Env` and need no ctx.
  */
 export interface AggregateContext {
   provider: LLMProvider;
+  getProvider?: (role: AgentRole) => LLMProvider;
   env_config: EnvConfig;
   env: Env;
   actor: Actor;
+}
+
+/** Resolve the provider for a given role with the canonical fallback. */
+export function resolveProvider(ctx: AggregateContext, role: AgentRole): LLMProvider {
+  return ctx.getProvider?.(role) ?? ctx.provider;
 }
 
 /**

@@ -26,4 +26,10 @@ export * from "./provider-factory";
 export * from "./prompts";
 export { createMockProvider, type MockProviderConfig } from "./providers/mock-provider";
 export { DEFAULT_MOCK_JSON_RESPONSES } from "./providers/mock-defaults";
+export {
+  createOpenAIProvider,
+  OPENAI_DEFAULT_MODEL,
+  type CreateOpenAIProviderInput,
+  type OpenAIClientLike,
+} from "./providers/openai-provider";
 export * from "./agents";

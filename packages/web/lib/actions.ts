@@ -44,18 +44,48 @@ export function makeEnv(): core.Env {
  * Playbook-driven canned responses so the UI demo shows richer content than
  * the bare DEFAULT_MOCK_JSON_RESPONSES would produce.
  *
- * Real-provider wiring lands in a later milestone: at that point this helper
- * will delegate to `selectProvider(env_config)` when `USE_REAL_LLM` is set.
+ * Milestone 2C: the Deal Memo drafter optionally routes to a server-side
+ * OpenAI provider via a browser-side HTTP proxy. Activation requires:
+ *   - NEXT_PUBLIC_USE_REAL_LLM=true
+ *   - NEXT_PUBLIC_LLM_PROVIDER_ALLOWLIST contains "openai"
+ *
+ * The real OPENAI_API_KEY is consulted only on the server (the route handler);
+ * it never reaches the browser. All other roles stay on the mock.
  */
+import { createOpenAIProxyProvider } from "./openai-proxy-provider";
+
+function realDealMemoEnabledOnClient(): boolean {
+  const useReal = (process.env.NEXT_PUBLIC_USE_REAL_LLM ?? "false").toLowerCase();
+  if (useReal !== "true" && useReal !== "1") return false;
+  const allow = (process.env.NEXT_PUBLIC_LLM_PROVIDER_ALLOWLIST ?? "")
+    .split(",")
+    .map((s) => s.trim());
+  return allow.includes("openai");
+}
+
 export function buildAggregateContext(state: core.ProjectState): core.AggregateContext {
-  const provider = core.createMockProvider({
+  const mockProvider = core.createMockProvider({
     json_responses: buildPlaybookCannedResponses(state),
   });
+
+  const realDealMemoProvider: core.LLMProvider | null = realDealMemoEnabledOnClient()
+    ? createOpenAIProxyProvider({
+        endpoint: "/api/agent/deal-memo",
+        model_id_hint: process.env.NEXT_PUBLIC_OPENAI_MODEL || "openai-remote",
+      })
+    : null;
+
   return {
-    provider,
-    env_config: core.DEFAULT_ENV_CONFIG,
+    provider: mockProvider,
+    env_config: core.DEFAULT_ENV_CONFIG, // server is authoritative for real env
     env: makeEnv(),
     actor: DEMO_LAWYER,
+    getProvider: (role) => {
+      if (role === "deal_memo_drafter" && realDealMemoProvider) {
+        return realDealMemoProvider;
+      }
+      return mockProvider;
+    },
   };
 }
 
