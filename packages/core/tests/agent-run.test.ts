@@ -1,61 +1,53 @@
 import { describe, expect, it } from "vitest";
 import {
   aggCreateRevision,
-  aggCreateV0,
   aggDecideIssue,
-  aggDraftDealMemo,
-  aggDraftDraftingPlan,
   aggRunMockFinalQA,
   aggRunMockReviews,
   recordMockAgentRun,
 } from "@contractops/core";
-import { humanLawyer, testEnv, user } from "./helpers";
+import { humanLawyer, testEnv } from "./helpers";
 import { buildToReadyForReviews } from "./scenarios";
 
 describe("recordMockAgentRun", () => {
-  it("populates all required fields and marks mock=true", () => {
+  it("populates all required fields and marks mode=mock", () => {
     const env = testEnv();
     const run = recordMockAgentRun({
       project_id: "p1",
       source_agent: "mock_claude",
-      agent_role: "counterparty_reviewer",
-      output: { findings: 3 },
-      mock_prompt_id: "claude_v1",
-      mock_input_id: "v0_hash",
+      role: "counterparty_reviewer",
+      output_json: { findings: 3 },
+      prompt_version: "v1",
+      input_hash: "v0_hash",
       env,
     });
-    expect(run.mock).toBe(true);
+    expect(run.mode).toBe("mock");
+    expect(run.provider_id).toBe("mock");
+    expect(run.model_id).toBe("mock-v1");
     expect(run.source_agent).toBe("mock_claude");
-    expect(run.agent_role).toBe("counterparty_reviewer");
-    expect(run.mock_prompt_id).toBe("claude_v1");
-    expect(run.mock_input_id).toBe("v0_hash");
+    expect(run.role).toBe("counterparty_reviewer");
+    expect(run.prompt_version).toBe("v1");
+    expect(run.input_hash).toBe("v0_hash");
     expect(run.output_json).toEqual({ findings: 3 });
     expect(run.status).toBe("completed");
-    expect(run.created_at).toBeTruthy();
-    expect(run.finished_at).toBeTruthy();
+    expect(run.started_at).toBeTruthy();
+    expect(run.completed_at).toBeTruthy();
+    expect(run.error_message).toBeNull();
   });
 });
 
 describe("Aggregate ops create AgentRun records", () => {
-  it("aggDraftDealMemo creates a deal_memo_drafter AgentRun", () => {
-    // Use a fresh-built scenario for this assertion
-    // Build only as far as intake_in_progress; then verify draftDealMemo creates a run.
-    const env = testEnv();
-    // Manually build to intake_in_progress via aggregate ops
-    // (Re-use buildToReadyForReviews and inspect runs)
+  it("aggDraftDealMemo / aggDraftDraftingPlan / aggCreateV0 each create an AgentRun", () => {
     const ready = buildToReadyForReviews("nda.json");
-    expect(ready.s.agent_runs.some((r) => r.agent_role === "deal_memo_drafter")).toBe(true);
-    expect(ready.s.agent_runs.some((r) => r.agent_role === "drafting_plan_drafter")).toBe(true);
-    expect(ready.s.agent_runs.some((r) => r.agent_role === "drafter")).toBe(true);
+    expect(ready.s.agent_runs.some((r) => r.role === "deal_memo_drafter")).toBe(true);
+    expect(ready.s.agent_runs.some((r) => r.role === "drafting_plan_drafter")).toBe(true);
+    expect(ready.s.agent_runs.some((r) => r.role === "contract_drafter")).toBe(true);
   });
 
-  it("aggRunMockReviews creates one AgentRun per provider plus IssueCards", () => {
+  it("aggRunMockReviews creates one AgentRun per default provider plus IssueCards", () => {
     const ready = buildToReadyForReviews("nda.json");
-    let s = ready.s;
-    const env = ready.env;
-
     const res = aggRunMockReviews(
-      s,
+      ready.s,
       {
         seeds: [
           {
@@ -82,61 +74,62 @@ describe("Aggregate ops create AgentRun records", () => {
           },
         ],
       },
-      env,
+      ready.env,
     );
-    s = res.state;
-    // 4 default providers
-    const newRunsFromReviews = s.agent_runs.filter(
+    const reviewRuns = res.state.agent_runs.filter(
       (r) =>
-        r.agent_role === "counterparty_reviewer" ||
-        r.agent_role === "source_consistency_reviewer" ||
-        r.agent_role === "korean_style_reviewer" ||
-        r.agent_role === "deterministic_qa",
+        r.role === "counterparty_reviewer" ||
+        r.role === "source_consistency_reviewer" ||
+        r.role === "legal_style_reviewer" ||
+        r.role === "deterministic_qa",
     );
-    expect(newRunsFromReviews.length).toBeGreaterThanOrEqual(4);
-    expect(s.issue_cards.length).toBe(2);
+    expect(reviewRuns.length).toBeGreaterThanOrEqual(4);
+    expect(res.state.issue_cards.length).toBe(2);
+    for (const r of reviewRuns) expect(r.mode).toBe("mock");
   });
 
-  it("aggCreateRevision creates a reviser AgentRun", () => {
+  it("aggCreateRevision creates a revision_agent AgentRun", () => {
     const ready = buildToReadyForReviews("nda.json");
     let s = aggRunMockReviews(ready.s, {
-      seeds: [{
-        source_agent: "mock_claude",
-        severity: "low",
-        location: {},
-        issue_type: "x",
-        problem: "x",
-        why_it_matters: "x",
-        recommended_revision: "x",
-        business_impact: "x",
-        recommended_action: "accept",
-      }],
+      seeds: [
+        {
+          source_agent: "mock_claude",
+          severity: "low",
+          location: {},
+          issue_type: "x",
+          problem: "x",
+          why_it_matters: "x",
+          recommended_revision: "x",
+          business_impact: "x",
+          recommended_action: "accept",
+        },
+      ],
     }, ready.env).state;
-
     s = aggDecideIssue(s, {
       issue_id: s.issue_cards[0]!.issue_id,
       decision: "accepted",
       decided_by: humanLawyer,
     }, ready.env).state;
-
     const rev = aggCreateRevision(s, {}, ready.env);
-    expect(rev.state.agent_runs.some((r) => r.agent_role === "reviser")).toBe(true);
+    expect(rev.state.agent_runs.some((r) => r.role === "revision_agent")).toBe(true);
   });
 
-  it("aggRunMockFinalQA creates a final_qa AgentRun", () => {
+  it("aggRunMockFinalQA creates a final_qa_assistant AgentRun", () => {
     const ready = buildToReadyForReviews("nda.json");
     let s = aggRunMockReviews(ready.s, {
-      seeds: [{
-        source_agent: "mock_claude",
-        severity: "low",
-        location: {},
-        issue_type: "x",
-        problem: "x",
-        why_it_matters: "x",
-        recommended_revision: "x",
-        business_impact: "x",
-        recommended_action: "accept",
-      }],
+      seeds: [
+        {
+          source_agent: "mock_claude",
+          severity: "low",
+          location: {},
+          issue_type: "x",
+          problem: "x",
+          why_it_matters: "x",
+          recommended_revision: "x",
+          business_impact: "x",
+          recommended_action: "accept",
+        },
+      ],
     }, ready.env).state;
     s = aggDecideIssue(s, {
       issue_id: s.issue_cards[0]!.issue_id,
@@ -146,6 +139,6 @@ describe("Aggregate ops create AgentRun records", () => {
     s = aggCreateRevision(s, {}, ready.env).state;
 
     const qa = aggRunMockFinalQA(s, ready.env);
-    expect(qa.state.agent_runs.some((r) => r.agent_role === "final_qa")).toBe(true);
+    expect(qa.state.agent_runs.some((r) => r.role === "final_qa_assistant")).toBe(true);
   });
 });

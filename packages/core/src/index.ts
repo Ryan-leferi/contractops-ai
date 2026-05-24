@@ -1,4 +1,5 @@
 export * from "./env";
+export * from "./env-config";
 export * from "./errors";
 export * from "./transitions";
 export * from "./project-status";
@@ -19,3 +20,9 @@ export * from "./final-qa";
 export * from "./export";
 export * from "./agent-run";
 export * from "./aggregate";
+export * from "./provider";
+export * from "./provider-factory";
+export * from "./prompts";
+export { createMockProvider, type MockProviderConfig } from "./providers/mock-provider";
+export { DEFAULT_MOCK_JSON_RESPONSES } from "./providers/mock-defaults";
+export * from "./agents";

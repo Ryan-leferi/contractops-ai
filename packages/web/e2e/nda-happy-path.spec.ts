@@ -60,6 +60,8 @@ test("NDA happy path — create → sources → confirm → playbook → intake 
 
   // 5. Intake — answer all required, then verify Deal Memo approval is blocked until done.
   await page.goto(`/projects/${projectId}/intake`);
+  // Wait for hydration: the StoreProvider re-loads from localStorage on mount.
+  await expect(page.locator('[data-testid^="intake-card-"]').first()).toBeVisible();
   const intakeCards = page.locator('[data-testid^="intake-card-"]');
   const totalCount = await intakeCards.count();
   expect(totalCount).toBeGreaterThan(0);

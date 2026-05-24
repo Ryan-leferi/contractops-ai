@@ -11,21 +11,25 @@ import type {
   Playbook,
   Project,
   SourceDocument,
+  SourceDocumentContent,
   SourcePack,
 } from "@contractops/schemas";
 
 /**
  * ProjectState — aggregate view of all entities for a single project.
  *
- * AuditLog is intentionally NOT a field here. AuditLog is append-only and
- * lives in an `AppendOnlyRepository<AuditLog>` outside this aggregate.
- * Embedding it would invite mutation by callers; keeping it external makes
- * the append-only invariant enforceable at the storage layer.
+ * `source_contents` is keyed by `source_document_id`. The list is data
+ * only — the canonical SourceDocument metadata lives in `source_documents`.
+ * Two separate fields, two separate concerns. (PLATFORM_BRIEF.md §9, §10.)
+ *
+ * AuditLog is intentionally NOT a field here — it is append-only and lives
+ * in a separate AppendOnlyRepository.
  */
 export interface ProjectState {
   project: Project;
   source_pack: SourcePack;
   source_documents: SourceDocument[];
+  source_contents: SourceDocumentContent[];
   contract_type: ContractType | null;
   playbook: Playbook | null;
   intake_questions: IntakeQuestion[];
@@ -46,6 +50,7 @@ export function emptyProjectState(
     project,
     source_pack,
     source_documents: [],
+    source_contents: [],
     contract_type: null,
     playbook: null,
     intake_questions: [],

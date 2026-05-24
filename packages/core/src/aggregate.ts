@@ -265,8 +265,8 @@ export function aggDraftDealMemo(
   const run = recordMockAgentRun({
     project_id: state.project.id,
     source_agent: input.source_agent ?? "mock_gpt",
-    agent_role: "deal_memo_drafter",
-    output: { deal_memo_id: deal_memo.id, length: input.content.length },
+    role: "deal_memo_drafter",
+    output_json: { deal_memo_id: deal_memo.id, length: input.content.length },
     env,
   });
   return {
@@ -328,8 +328,8 @@ export function aggDraftDraftingPlan(
   const run = recordMockAgentRun({
     project_id: state.project.id,
     source_agent: input.source_agent ?? "mock_gpt",
-    agent_role: "drafting_plan_drafter",
-    output: {
+    role: "drafting_plan_drafter",
+    output_json: {
       drafting_plan_id: drafting_plan.id,
       is_custom: drafting_plan.is_custom,
     },
@@ -398,8 +398,8 @@ export function aggCreateV0(
   const run = recordMockAgentRun({
     project_id: state.project.id,
     source_agent: input.source_agent ?? "mock_gpt_drafter",
-    agent_role: "drafter",
-    output: { version_id: version.id, version_number: version.version_number },
+    role: "contract_drafter",
+    output_json: { version_id: version.id, version_number: version.version_number },
     env,
   });
   return {
@@ -434,13 +434,13 @@ export interface AggRunMockReviewsInput {
    * per provider for traceability. Defaults to `["mock_claude", "mock_gemini",
    * "mock_korean_style", "mock_python_qa"]`.
    */
-  providers?: { source_agent: string; role: "counterparty_reviewer" | "source_consistency_reviewer" | "korean_style_reviewer" | "deterministic_qa" }[];
+  providers?: { source_agent: string; role: "counterparty_reviewer" | "source_consistency_reviewer" | "legal_style_reviewer" | "deterministic_qa" }[];
 }
 
 const DEFAULT_PROVIDERS: NonNullable<AggRunMockReviewsInput["providers"]> = [
   { source_agent: "mock_claude", role: "counterparty_reviewer" },
   { source_agent: "mock_gemini", role: "source_consistency_reviewer" },
-  { source_agent: "mock_gpt_korean_style", role: "korean_style_reviewer" },
+  { source_agent: "mock_gpt_korean_style", role: "legal_style_reviewer" },
   { source_agent: "mock_python_qa", role: "deterministic_qa" },
 ];
 
@@ -465,8 +465,8 @@ export function aggRunMockReviews(
     recordMockAgentRun({
       project_id: state.project.id,
       source_agent: p.source_agent,
-      agent_role: p.role,
-      output: {
+      role: p.role,
+      output_json: {
         version_id: latest.id,
         issue_count: cards.filter((c) => c.source_agent === p.source_agent).length,
       },
@@ -555,8 +555,8 @@ export function aggCreateRevision(
   const run = recordMockAgentRun({
     project_id: state.project.id,
     source_agent: input.source_agent ?? "mock_reviser",
-    agent_role: "reviser",
-    output: {
+    role: "revision_agent",
+    output_json: {
       version_id: res.version.id,
       applied_issue_card_ids: res.applied_issue_card_ids,
       skipped: res.skipped,
@@ -586,8 +586,8 @@ export function aggRunMockFinalQA(
   const run = recordMockAgentRun({
     project_id: state.project.id,
     source_agent: "mock_python_qa_final",
-    agent_role: "final_qa",
-    output: {
+    role: "final_qa_assistant",
+    output_json: {
       version_id: latest.id,
       findings_count: res.issue_cards.length,
     },

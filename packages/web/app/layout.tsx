@@ -20,9 +20,18 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                 <a href="/projects" className="text-lg font-semibold">
                   ContractOps AI
                 </a>
-                <span className="text-xs text-muted-foreground px-2 py-1 border rounded">
-                  Mock MVP · no real LLM · no external send
-                </span>
+                <div className="flex items-center gap-2">
+                  <span
+                    className="text-xs px-2 py-1 border rounded bg-muted text-foreground font-medium"
+                    title="LLM provider mode. Set NEXT_PUBLIC_LLM_MODE at build time to display a different value. Real-mode wiring arrives in a later milestone."
+                    data-testid="llm-mode-badge"
+                  >
+                    LLM mode: {(process.env.NEXT_PUBLIC_LLM_MODE ?? "MOCK").toUpperCase()}
+                  </span>
+                  <span className="text-xs text-muted-foreground px-2 py-1 border rounded">
+                    Mock MVP · no external send
+                  </span>
+                </div>
               </header>
               {children}
             </div>

@@ -42,6 +42,7 @@ test("Custom Contract path — v0 blocked until human-approved Drafting Plan", a
 
   // 4. Answer required intake (Custom Contract has 2 required questions)
   await page.goto(`/projects/${projectId}/intake`);
+  await expect(page.locator('[data-testid^="intake-card-"]').first()).toBeVisible();
   const cards = page.locator('[data-testid^="intake-card-"]');
   const count = await cards.count();
   for (let i = 0; i < count; i++) {
