@@ -1,36 +1,47 @@
 /**
- * Server-side DOCX export endpoint (Milestone 3A).
+ * Server-side export render endpoint (Milestones 3A + 3B).
  *
- * Why this is server-only:
- *   - The `docx` library is heavy (~MB of XML scaffolding) and pulls Node
- *     built-ins. We do NOT want it in the browser bundle.
- *   - Generated DOCX bytes never round-trip through React state. The route
- *     streams the binary back as a download attachment.
+ * Single endpoint for all four export types — the renderer chooses the
+ * format and the MIME type, so the route is type-agnostic.
  *
  * Contract:
- *   POST /api/exports/docx
- *   body: { export_type: "clean_docx" | "commentary_docx", project_state: ProjectState }
+ *   POST /api/exports/render
+ *   body: {
+ *     export_type: "clean_docx" | "commentary_docx" | "negotiation_matrix" | "cover_email",
+ *     project_state: ProjectState,
+ *   }
  *   response (200):
- *     content-type: application/vnd.openxmlformats-officedocument.wordprocessingml.document
- *     content-disposition: attachment; filename="...docx"
- *     body: raw DOCX bytes
+ *     content-type: <renderer's mime_type, e.g. application/vnd...docx OR text/markdown>
+ *     content-disposition: attachment; filename="..."
+ *     body: raw bytes (DOCX zip or UTF-8 Markdown)
  *   response (4xx): JSON { error, code }
  *
  * The route re-validates the workflow guards on the server side:
  *   - the posted ProjectState must contain a `final = true` ContractVersion;
- *   - the export_type must be one of the two DOCX kinds we render.
+ *   - the export_type must be one of the four supported kinds.
  *
  * The route does NOT call any LLM provider, does NOT touch the filesystem,
  * and does NOT externally send anything. It is purely a render-and-stream
  * boundary.
  */
 import { NextResponse } from "next/server";
-import { createDocxRenderer, type ExportRenderInput, type ExportRenderType } from "@contractops/core/export-renderer";
+import {
+  createExportRenderer,
+  type ExportRenderInput,
+  type ExportRenderType,
+} from "@contractops/core/export-renderer";
 
 // Force the Node.js runtime — the `docx` library uses Buffer / Node APIs and
 // is incompatible with the Edge runtime.
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+
+const SUPPORTED_TYPES: ReadonlySet<ExportRenderType> = new Set([
+  "clean_docx",
+  "commentary_docx",
+  "negotiation_matrix",
+  "cover_email",
+]);
 
 interface PostBody {
   export_type?: unknown;
@@ -49,11 +60,13 @@ export async function POST(request: Request) {
   }
 
   const export_type = body.export_type;
-  if (export_type !== "clean_docx" && export_type !== "commentary_docx") {
+  if (typeof export_type !== "string" || !SUPPORTED_TYPES.has(export_type as ExportRenderType)) {
     return NextResponse.json(
       {
         error:
-          'export_type must be "clean_docx" or "commentary_docx"; got: ' +
+          "export_type must be one of: " +
+          [...SUPPORTED_TYPES].join(", ") +
+          "; got: " +
           JSON.stringify(export_type),
         code: "BAD_EXPORT_TYPE",
       },
@@ -69,21 +82,38 @@ export async function POST(request: Request) {
     );
   }
 
-  const renderer = createDocxRenderer();
+  const renderer = createExportRenderer();
   let rendered;
   try {
-    rendered =
-      export_type === "clean_docx"
-        ? await renderer.renderCleanDocx(renderInput.input)
-        : await renderer.renderCommentaryDocx(renderInput.input);
+    switch (export_type as ExportRenderType) {
+      case "clean_docx":
+        rendered = await renderer.renderCleanDocx(renderInput.input);
+        break;
+      case "commentary_docx":
+        rendered = await renderer.renderCommentaryDocx(renderInput.input);
+        break;
+      case "negotiation_matrix":
+        rendered = await renderer.renderNegotiationMatrix(renderInput.input);
+        break;
+      case "cover_email":
+        rendered = await renderer.renderCoverEmail(renderInput.input);
+        break;
+    }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    // Clean-render scrub failures land here. 422 = the request was well-formed
-    // but the renderer refused to produce the file because it would leak
-    // commentary into a clean export.
+    // Self-scrub failures (clean DOCX or cover email containing a forbidden
+    // marker) land here. 422 = the request was well-formed but the renderer
+    // refused to produce the file because it would leak commentary.
     return NextResponse.json(
       { error: message, code: "RENDER_REFUSED" },
       { status: 422 },
+    );
+  }
+
+  if (!rendered) {
+    return NextResponse.json(
+      { error: "renderer produced no output (unreachable)", code: "RENDER_EMPTY" },
+      { status: 500 },
     );
   }
 
@@ -94,7 +124,7 @@ export async function POST(request: Request) {
       "content-length": String(rendered.buffer.byteLength),
       "content-disposition": `attachment; filename="${rendered.file_name}"; filename*=UTF-8''${encodeURIComponent(rendered.file_name)}`,
       "cache-control": "no-store",
-      "x-export-type": export_type as ExportRenderType,
+      "x-export-type": export_type,
       "x-export-file-name": encodeURIComponent(rendered.file_name),
     },
   });
@@ -154,8 +184,6 @@ function extractRenderInput(raw: unknown): ExtractResult {
     };
   }
 
-  // Render input mirrors the ExportRenderInput type. Defensive defaults on
-  // the optional fields so a stale localStorage state still renders.
   const input: ExportRenderInput = {
     project: project as ExportRenderInput["project"],
     contract_version: final as unknown as ExportRenderInput["contract_version"],

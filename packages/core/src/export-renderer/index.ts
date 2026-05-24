@@ -1,5 +1,5 @@
 /**
- * DOCX export renderer entry point (Milestone 3A).
+ * Export renderer entry point (Milestones 3A + 3B).
  *
  * Imported via the subpath `@contractops/core/export-renderer` so the heavy
  * `docx` dependency is only ever loaded by server-side code. The browser
@@ -8,7 +8,14 @@
  *
  * Provider-agnostic: this module imports nothing from any LLM provider, and
  * never opens a network connection. It is pure stream-out of a Document
- * object into a `.docx` byte buffer.
+ * (or Markdown string) into a byte buffer.
+ *
+ * Four supported render paths:
+ *
+ *   - clean_docx          → external clean contract (.docx)
+ *   - commentary_docx     → internal legal commentary (.docx)
+ *   - negotiation_matrix  → internal negotiation matrix (.docx)
+ *   - cover_email         → external cover email draft (.md)
  */
 
 export {
@@ -31,20 +38,27 @@ export type {
 
 export { buildCleanDocx } from "./build-clean";
 export { buildCommentaryDocx } from "./build-commentary";
+export { buildNegotiationMatrix } from "./build-negotiation-matrix";
+export { buildCoverEmail } from "./build-cover-email";
 export { safeFileNamePart } from "./util";
 
 import { buildCleanDocx } from "./build-clean";
 import { buildCommentaryDocx } from "./build-commentary";
+import { buildNegotiationMatrix } from "./build-negotiation-matrix";
+import { buildCoverEmail } from "./build-cover-email";
 import type { ExportRenderer } from "./types";
 
 /**
- * Construct the default DOCX renderer. Returned object satisfies the
- * ExportRenderer interface so callers can swap in test doubles without
- * caring whether they're talking to the real `docx` library or a stub.
+ * Construct the default export renderer with all four render paths wired
+ * to the canonical builders. Returned object satisfies the ExportRenderer
+ * interface so callers can swap in test doubles without caring whether
+ * they're talking to the real `docx` library or a stub.
  */
-export function createDocxRenderer(): ExportRenderer {
+export function createExportRenderer(): ExportRenderer {
   return {
     renderCleanDocx: buildCleanDocx,
     renderCommentaryDocx: buildCommentaryDocx,
+    renderNegotiationMatrix: buildNegotiationMatrix,
+    renderCoverEmail: buildCoverEmail,
   };
 }

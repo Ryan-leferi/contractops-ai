@@ -8,14 +8,23 @@ import type {
 import type { DeterministicQAResult } from "../qa/types";
 
 /**
- * Render targets supported by the Milestone 3A DOCX renderer.
+ * Render targets supported by the export renderer (Milestones 3A + 3B).
  *
- * `clean_docx`     — external, counterparty-facing. MUST contain no internal
- *                    commentary, no rejected Issue Card content.
- * `commentary_docx` — internal-only. Carries Issue Card decisions,
- *                    deterministic QA summary, AgentRun summary.
+ * `clean_docx`         — external, counterparty-facing. MUST contain no
+ *                        internal commentary, no rejected Issue Card content.
+ * `commentary_docx`    — internal-only. Carries Issue Card decisions,
+ *                        deterministic QA summary, AgentRun summary.
+ * `negotiation_matrix` — internal-only. Per-issue matrix with decision
+ *                        status, response position, and Playbook fallbacks.
+ * `cover_email`        — external. Polite Korean business email draft
+ *                        (Markdown). Contains NO Issue Card / commentary
+ *                        / negotiation content. System never sends.
  */
-export type ExportRenderType = "clean_docx" | "commentary_docx";
+export type ExportRenderType =
+  | "clean_docx"
+  | "commentary_docx"
+  | "negotiation_matrix"
+  | "cover_email";
 
 /**
  * Normalized input shape for both render paths. The web API route extracts
@@ -39,17 +48,23 @@ export interface ExportRenderInput {
 }
 
 export interface ExportRenderResult {
-  /** Binary `.docx` payload — Office Open XML zipped bundle. */
+  /**
+   * Binary payload — Office Open XML zipped bundle for DOCX outputs, UTF-8
+   * Markdown bytes for the cover_email path. Either way the API route
+   * streams it back with the matching `mime_type` and a download attachment.
+   */
   buffer: Uint8Array;
-  /** Suggested filename for the download. Already includes the `.docx` ext. */
+  /** Suggested filename for the download. Already includes the extension. */
   file_name: string;
-  /** Standard wordprocessingml MIME type. */
+  /** MIME type matching the buffer payload. */
   mime_type: string;
 }
 
 export interface ExportRenderer {
   renderCleanDocx(input: ExportRenderInput): Promise<ExportRenderResult>;
   renderCommentaryDocx(input: ExportRenderInput): Promise<ExportRenderResult>;
+  renderNegotiationMatrix(input: ExportRenderInput): Promise<ExportRenderResult>;
+  renderCoverEmail(input: ExportRenderInput): Promise<ExportRenderResult>;
 }
 
 export const DOCX_MIME_TYPE =

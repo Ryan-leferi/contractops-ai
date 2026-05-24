@@ -61,6 +61,9 @@ const FORBIDDEN_PATH_PATTERNS = [
   // If a binary Playbook template is ever needed, add an explicit
   // allowlist exception here and document the reason in CLAUDE.md §8.
   { name: "generated DOCX export", re: /\.docx$/i },
+  // Cover email Markdown export (Milestone 3B). Specifically the renderer
+  // suffix — ordinary docs/README MD remain trackable.
+  { name: "generated cover email Markdown", re: /_cover_email\.md$/i },
 ];
 
 const ENV_ALLOWLIST = new Set(["\\.env.example", ".env.example"]);

@@ -24,6 +24,12 @@ playwright-report/
 *.docx
 **/*.docx
 
+# Cover email Markdown export artifacts (Milestone 3B).
+# Only the renderer-generated suffix is ignored; ordinary docs like
+# README.md, CLAUDE.md, docs/*.md remain tracked.
+*_cover_email.md
+**/*_cover_email.md
+
 # Environment / secrets
 .env
 .env.*

@@ -57,13 +57,16 @@ const SCOPED_IMPORT_RULES: ScopedImportRule[] = [
   },
   // `docx` is the Office Open XML generator used by the DOCX export renderer.
   // It is heavy and Node-only; it must never reach the client bundle. Only
-  // the two builder files inside the renderer module are allowed to import it.
+  // the three DOCX builder files inside the renderer module are allowed to
+  // import it. `build-cover-email.ts` is Markdown-only and must stay free
+  // of `docx`.
   {
     pattern: /from\s+["']docx["']/,
     name: "docx",
     allowed_files: [
       resolve(CORE_SRC, "export-renderer/build-clean.ts"),
       resolve(CORE_SRC, "export-renderer/build-commentary.ts"),
+      resolve(CORE_SRC, "export-renderer/build-negotiation-matrix.ts"),
     ],
   },
   {
@@ -72,6 +75,7 @@ const SCOPED_IMPORT_RULES: ScopedImportRule[] = [
     allowed_files: [
       resolve(CORE_SRC, "export-renderer/build-clean.ts"),
       resolve(CORE_SRC, "export-renderer/build-commentary.ts"),
+      resolve(CORE_SRC, "export-renderer/build-negotiation-matrix.ts"),
     ],
   },
 ];

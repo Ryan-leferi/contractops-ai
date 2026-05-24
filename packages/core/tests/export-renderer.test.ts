@@ -4,10 +4,12 @@ import JSZip from "jszip";
 import {
   buildCleanDocx,
   buildCommentaryDocx,
+  buildCoverEmail,
+  buildNegotiationMatrix,
   CLEAN_FORBIDDEN_MARKERS,
   COMMENTARY_INTERNAL_FOOTER,
   COMMENTARY_INTERNAL_HEADER,
-  createDocxRenderer,
+  createExportRenderer,
   DOCX_MIME_TYPE,
   findForbiddenMarker,
   type ExportRenderInput,
@@ -345,12 +347,16 @@ describe("DOCX export renderer (Milestone 3A)", () => {
     expect(commentary.file_name).toMatch(/_commentary_INTERNAL\.docx$/);
   });
 
-  it("renderer factory returns ExportRenderer satisfying both render paths", async () => {
-    const renderer = createDocxRenderer();
+  it("renderer factory returns ExportRenderer satisfying all four render paths", async () => {
+    const renderer = createExportRenderer();
     const a = await renderer.renderCleanDocx(makeInput());
     const b = await renderer.renderCommentaryDocx(makeInput());
+    const c = await renderer.renderNegotiationMatrix(makeInput());
+    const d = await renderer.renderCoverEmail(makeInput());
     expect(a.buffer.byteLength).toBeGreaterThan(0);
     expect(b.buffer.byteLength).toBeGreaterThan(0);
+    expect(c.buffer.byteLength).toBeGreaterThan(0);
+    expect(d.buffer.byteLength).toBeGreaterThan(0);
   });
 
   it("findForbiddenMarker detects every member of the marker list", () => {
@@ -358,6 +364,144 @@ describe("DOCX export renderer (Milestone 3A)", () => {
       expect(findForbiddenMarker(`before ${marker} after`)).toBe(marker);
     }
     expect(findForbiddenMarker("perfectly clean text")).toBeNull();
+  });
+
+  // ─────────────────────────────────────────────────────────────────────
+  // Milestone 3B — negotiation matrix (DOCX, internal)
+  // ─────────────────────────────────────────────────────────────────────
+
+  it("negotiation matrix DOCX returns a non-empty .docx buffer with INTERNAL filename", async () => {
+    const { buffer, file_name, mime_type } = await buildNegotiationMatrix(makeInput());
+    expect(buffer.byteLength).toBeGreaterThan(1000);
+    expect(file_name).toMatch(/_negotiation_matrix_INTERNAL\.docx$/);
+    expect(mime_type).toBe(DOCX_MIME_TYPE);
+    // PKZip magic
+    expect(buffer[0]).toBe(0x50);
+    expect(buffer[1]).toBe(0x4b);
+  });
+
+  it("negotiation matrix XML self-identifies as INTERNAL ONLY (banner + footer)", async () => {
+    const { buffer } = await buildNegotiationMatrix(makeInput());
+    const text = await docxText(buffer);
+    expect(text).toContain(COMMENTARY_INTERNAL_HEADER);
+    expect(text).toContain(COMMENTARY_INTERNAL_FOOTER);
+    expect(text).toContain("협상 매트릭스");
+    expect(text).toContain("Negotiation Matrix");
+  });
+
+  it("negotiation matrix XML lists every Issue Card with its decision and response position", async () => {
+    const { buffer } = await buildNegotiationMatrix(makeInput());
+    const text = await docxText(buffer);
+    // Both accepted and rejected cards must appear — the matrix covers the
+    // full decision trail, not just the applied ones.
+    expect(text).toContain("ic_accepted");
+    expect(text).toContain("accepted");
+    expect(text).toContain("ic_rejected");
+    expect(text).toContain("rejected");
+    // Derived response position lines must be present for at least one card.
+    expect(text).toMatch(/Adopt recommended revision|Propose recommended_revision|Reject counterparty position/);
+  });
+
+  it("negotiation matrix XML includes source_pack_id, playbook_id, and contract_version_id", async () => {
+    const input = makeInput();
+    const { buffer } = await buildNegotiationMatrix(input);
+    const text = await docxText(buffer);
+    expect(text).toContain(input.source_pack_id);
+    expect(text).toContain(input.playbook!.id);
+    expect(text).toContain(input.contract_version.id);
+  });
+
+  it("negotiation matrix decision summary line reflects card counts", async () => {
+    const { buffer } = await buildNegotiationMatrix(makeInput());
+    const text = await docxText(buffer);
+    // Fixture: 1 accepted, 1 rejected, 0 of the others.
+    expect(text).toMatch(/accepted=1/);
+    expect(text).toMatch(/rejected=1/);
+    expect(text).toMatch(/partially_accepted=0/);
+  });
+
+  // ─────────────────────────────────────────────────────────────────────
+  // Milestone 3B — cover email (Markdown, external)
+  // ─────────────────────────────────────────────────────────────────────
+
+  it("cover email returns non-empty UTF-8 Markdown with text/markdown MIME", async () => {
+    const { buffer, file_name, mime_type } = await buildCoverEmail(makeInput());
+    expect(buffer.byteLength).toBeGreaterThan(100);
+    expect(file_name).toMatch(/_cover_email\.md$/);
+    expect(mime_type).toBe("text/markdown; charset=utf-8");
+    // Must NOT have PKZip magic — it is text, not a DOCX.
+    expect(buffer[0]).not.toBe(0x50);
+  });
+
+  it("cover email Markdown contains polite Korean business tone and project identifiers", async () => {
+    const input = makeInput();
+    const { buffer } = await buildCoverEmail(input);
+    const md = new TextDecoder().decode(buffer);
+    expect(md).toContain("안녕하십니까");
+    expect(md).toContain("감사합니다");
+    expect(md).toContain(input.project.name);
+    expect(md).toContain(input.contract_version.version_number);
+    expect(md).toContain(input.source_pack_id);
+    expect(md).toContain(input.playbook!.id);
+  });
+
+  it("cover email Markdown contains NO internal-commentary marker", async () => {
+    const { buffer } = await buildCoverEmail(makeInput());
+    const md = new TextDecoder().decode(buffer);
+    for (const marker of CLEAN_FORBIDDEN_MARKERS) {
+      expect(md).not.toContain(marker);
+    }
+  });
+
+  it("cover email Markdown contains NO Issue Card rationale — accepted OR rejected", async () => {
+    const { buffer } = await buildCoverEmail(makeInput());
+    const md = new TextDecoder().decode(buffer);
+    expect(md).not.toContain("ic_accepted");
+    expect(md).not.toContain("ic_rejected");
+    expect(md).not.toContain("REJECTED-ONLY");
+    expect(md).not.toContain("영문 표기 추가 권고");
+    expect(md).not.toContain("기간 만료 후 30일 통지 조항 추가");
+    // No deterministic_qa noise either.
+    expect(md).not.toContain("forbidden_expressions");
+  });
+
+  it("cover email Markdown explicitly states the system does not send", async () => {
+    const { buffer } = await buildCoverEmail(makeInput());
+    const md = new TextDecoder().decode(buffer);
+    // Either the Korean or English line must appear; both are present in
+    // the rendered template.
+    expect(md).toMatch(/시스템은 이메일을 자동 발송하지 않습니다/);
+    expect(md).toMatch(/does NOT auto-send/);
+  });
+
+  it("cover email REFUSES when its rendered output somehow contains a forbidden marker", async () => {
+    // Inject a forbidden marker via the project name (which is interpolated
+    // into the subject line) and verify the renderer throws.
+    const tainted = makeInput({
+      project: {
+        ...makeProject(),
+        // The project name flows into the rendered body — if it contains a
+        // forbidden marker, the post-render scrub must catch it.
+        name: "Tainted Project [COMMENTARY] leak",
+      },
+    });
+    await expect(buildCoverEmail(tainted)).rejects.toThrow(/forbidden marker/i);
+  });
+
+  // ─────────────────────────────────────────────────────────────────────
+  // Cross-renderer file-name uniqueness (so a user downloading all four
+  // does not get clobbered names in their Downloads folder).
+  // ─────────────────────────────────────────────────────────────────────
+
+  it("file names are distinct across all four render paths for the same project", async () => {
+    const renderer = createExportRenderer();
+    const input = makeInput();
+    const a = await renderer.renderCleanDocx(input);
+    const b = await renderer.renderCommentaryDocx(input);
+    const c = await renderer.renderNegotiationMatrix(input);
+    const d = await renderer.renderCoverEmail(input);
+    const names = new Set([a.file_name, b.file_name, c.file_name, d.file_name]);
+    expect(names.size).toBe(4);
   });
 
   it("renderer source files do NOT import any LLM provider SDK", async () => {
