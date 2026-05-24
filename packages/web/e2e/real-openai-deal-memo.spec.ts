@@ -65,7 +65,7 @@ test.describe("Real OpenAI Deal Memo drafter (gated)", () => {
       await card.locator("button").click();
     }
 
-    // 4. Deal Memo — this MUST hit the real provider via /api/agent/deal-memo
+    // 4. Deal Memo ??this MUST hit the real provider via /api/agent/deal-memo
     await page.goto(`/projects/${projectId}/deal-memo`);
     await page.click('[data-testid="generate-deal-memo-btn"]');
     await expect(page.getByTestId("deal-memo-status")).toHaveText("Drafted", { timeout: 30_000 });
