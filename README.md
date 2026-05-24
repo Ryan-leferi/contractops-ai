@@ -83,6 +83,16 @@ E2E_REAL_OPENAI=true USE_REAL_LLM=true OPENAI_API_KEY=sk-... \
 
 `E2E_REAL_OPENAI=true` is the only way the optional real-OpenAI Playwright spec runs. CI keeps the variable unset.
 
+## Deterministic QA
+
+The deterministic QA engine (`packages/core/src/qa/`) is **code-based** — no LLM, no provider, no network. It runs on the final-QA step before the LLM `final_qa_assistant`, produces Issue Cards with `source_agent = "deterministic_qa"`, and emits a `deterministic_qa_run` audit entry. See [docs/03_AGENT_ROLES.md](docs/03_AGENT_ROLES.md#python-qa-deterministic-not-llm) for the check list.
+
+Three non-replacement rules:
+
+- Deterministic QA does **not** replace a human lawyer (lawyer decides every finding).
+- Deterministic QA does **not** replace LLM review (LLM `final_qa_assistant` still runs).
+- LLM review does **not** replace deterministic QA (PLATFORM_BRIEF.md §5 rule 13).
+
 ## Hard rules
 
 - AI does not make final decisions.

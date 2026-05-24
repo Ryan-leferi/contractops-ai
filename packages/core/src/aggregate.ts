@@ -31,7 +31,7 @@ import {
   decideIssueCard,
 } from "./issue-card";
 import { selectPlaybook } from "./playbook";
-import { assertStatusAtLeast, assertStatusOneOf, withStatus } from "./project-status";
+import { assertStatusAtLeast, assertStatusOneOf, statusRank, withStatus } from "./project-status";
 import { createProject } from "./project";
 import { createRevisionVersion } from "./revision";
 import {
@@ -53,6 +53,7 @@ import {
   runSourceConsistencyReviewer,
 } from "./agents/roles";
 import type { AgentRun, IssueCardFinding } from "@contractops/schemas";
+import { convertQAFindingToIssueCard, runDeterministicQA } from "./qa";
 
 export interface AggregateResult {
   state: ProjectState;
@@ -706,8 +707,77 @@ export async function aggCreateRevision(
  * Agent-backed final QA. Findings (if any) become IssueCards and the workflow
  * status stays at `revised` (or `issues_open` if any pending findings remain).
  * The LLM final-QA assistant does NOT replace deterministic Python QA — that
- * is a separate non-LLM pass tracked under role "deterministic_qa".
+ * is a separate non-LLM pass — see `aggRunDeterministicQA`. `aggRunMockFinalQA`
+ * runs deterministic QA FIRST so its findings are always produced even if the
+ * LLM call fails.
  */
+
+/**
+ * Deterministic-QA aggregate op. Code-based checks only — no LLM, no
+ * provider, no AgentRun. Emits a `deterministic_qa_run` audit entry with
+ * which checks ran and how many findings each produced.
+ *
+ * Findings are seeded as IssueCards with source_agent = "deterministic_qa"
+ * so the existing decision flow (accept / reject / partially_accept / defer)
+ * applies. Rejected cards remain excluded from revision per the workflow's
+ * invariants (PLATFORM_BRIEF.md §5 rule 5).
+ */
+export function aggRunDeterministicQA(
+  state: ProjectState,
+  env: Env,
+  actor: Actor,
+): AggregateResult {
+  assertStatusAtLeast(state.project.status, "draft_v0_created");
+  const latest = state.contract_versions[state.contract_versions.length - 1];
+  if (!latest) throw new Error("no version for deterministic QA");
+
+  const qa = runDeterministicQA({
+    contract_content: latest.content,
+    playbook: state.playbook,
+    source_pack: state.source_pack,
+    source_documents: state.source_documents,
+    source_contents: state.source_contents,
+    contract_version: latest,
+  });
+
+  const cards = createIssueCards({
+    seeds: qa.findings.map((f) => convertQAFindingToIssueCard(f, state.project.id)),
+    env,
+  });
+
+  // Advance status to at least `issues_open` so the freshly seeded cards can
+  // be decided. If the project is already past `issues_open` (revised, etc.)
+  // leave it alone — withStatus is idempotent for that case.
+  let project = state.project;
+  if (statusRank(project.status) < statusRank("issues_open")) {
+    project = withStatus(project, "reviews_in_progress");
+    project = withStatus(project, "issues_open");
+  }
+
+  const audit = createAuditLog({
+    project_id: state.project.id,
+    actor,
+    event_type: "deterministic_qa_run",
+    ref_id: latest.id,
+    payload: {
+      qa_engine: "deterministic",
+      finding_count: qa.findings.length,
+      check_ids: qa.checks_run.map((c) => c.check_id),
+      per_check: qa.checks_run,
+    },
+    env,
+  });
+
+  return {
+    state: {
+      ...state,
+      project,
+      issue_cards: [...state.issue_cards, ...cards],
+    },
+    audits: [audit],
+  };
+}
+
 export async function aggRunMockFinalQA(
   state: ProjectState,
   ctx: AggregateContext,
@@ -717,12 +787,17 @@ export async function aggRunMockFinalQA(
   const latest = state.contract_versions[state.contract_versions.length - 1];
   if (!latest) throw new Error("no version for final QA");
 
+  // 1. Deterministic QA FIRST. Code-based, no LLM — guaranteed to run even
+  // if the LLM call fails. Emits its own audit entry.
+  const det = aggRunDeterministicQA(state, ctx.env, ctx.actor);
+
+  // 2. LLM final QA assistant SECOND. Does not replace deterministic QA.
   const result = await runFinalQAAssistant({
     provider: resolveProvider(ctx, "final_qa_assistant"),
     env: ctx.env,
     input: {
-      project_id: state.project.id,
-      playbook: state.playbook,
+      project_id: det.state.project.id,
+      playbook: det.state.playbook!,
       version: latest,
     },
   });
@@ -732,9 +807,9 @@ export async function aggRunMockFinalQA(
     );
   }
 
-  const findings = result.output.findings;
-  const cards = createIssueCards({
-    seeds: findings.map((f) => ({
+  const llmFindings = result.output.findings;
+  const llmCards = createIssueCards({
+    seeds: llmFindings.map((f) => ({
       source_agent: result.agent_run.source_agent,
       severity: f.severity,
       location: f.location,
@@ -744,18 +819,18 @@ export async function aggRunMockFinalQA(
       recommended_revision: f.recommended_revision,
       business_impact: "final QA",
       recommended_action: "revise",
-      project_id: state.project.id,
+      project_id: det.state.project.id,
     })),
     env: ctx.env,
   });
 
   return {
     state: {
-      ...state,
-      issue_cards: [...state.issue_cards, ...cards],
-      agent_runs: [...state.agent_runs, result.agent_run],
+      ...det.state,
+      issue_cards: [...det.state.issue_cards, ...llmCards],
+      agent_runs: [...det.state.agent_runs, result.agent_run],
     },
-    audits: [],
+    audits: det.audits, // deterministic QA audit only; LLM emits no audit
   };
 }
 

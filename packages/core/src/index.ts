@@ -33,3 +33,4 @@ export {
   type OpenAIClientLike,
 } from "./providers/openai-provider";
 export * from "./agents";
+export * from "./qa";

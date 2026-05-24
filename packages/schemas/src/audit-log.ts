@@ -12,6 +12,7 @@ export const auditEventTypeSchema = z.enum([
   "draft_created",
   "issue_card_decided",
   "revision_generated",
+  "deterministic_qa_run",
   "final_approved",
   "exported",
 ]);
