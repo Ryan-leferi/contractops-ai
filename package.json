@@ -10,7 +10,9 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
-    "fixture": "tsx scripts/run-fixture.ts"
+    "fixture": "tsx scripts/run-fixture.ts",
+    "repo:hygiene": "node scripts/check-repo-hygiene.mjs",
+    "verify": "npm test && npm run typecheck && npm run build -w @contractops/web && npm run fixture && npm run e2e -w @contractops/web && npm run repo:hygiene"
   },
   "devDependencies": {
     "@types/node": "^20.14.0",

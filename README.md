@@ -110,6 +110,30 @@ Three non-replacement rules:
 - Deterministic QA does **not** replace LLM review (LLM `final_qa_assistant` still runs).
 - LLM review does **not** replace deterministic QA (PLATFORM_BRIEF.md §5 rule 13).
 
+## Verification gate (Milestone 2F)
+
+GitHub Actions runs `.github/workflows/ci.yml` on every push and pull request. CI is the **required green-bar gate** for merging into `main`. It runs in **mock mode only** — no real LLM API keys are configured in CI, and the workflow explicitly sets `USE_REAL_LLM=false` and `E2E_REAL_OPENAI=false` so no real-provider path can accidentally execute.
+
+The CI gate runs, in order:
+
+1. `npm ci`
+2. `npm test` — Vitest suite (acceptance, provider, agent, deterministic-QA, SDK-isolation).
+3. `npm exec tsc -- --noEmit` — TypeScript typecheck across the monorepo.
+4. `npm run build -w @contractops/web` — Next.js production build (verifies the client bundle never imports `openai` or `@anthropic-ai/sdk`).
+5. `npm run fixture` — CLI walkthrough against the synthetic Booth fixture.
+6. `npm run e2e -w @contractops/web` — Playwright (Chromium, mock-mode). The gated `real-openai-deal-memo.spec.ts` auto-skips because `E2E_REAL_OPENAI` is unset.
+7. `npm run repo:hygiene` — fails if any forbidden path (`.next`, `node_modules`, `test-results`, `playwright-report`, `.env`, `.env.local`, …) is tracked or staged, or if any tracked file contains a real-shaped API key (`sk-…`, `sk-ant-…`, `AIza…`) or PEM private key block. `.env.example` is allowlisted; strings that contain markers like `fake`, `test`, `example`, `placeholder` are treated as obvious test data.
+
+Run the full gauntlet locally before pushing:
+
+```bash
+npm run verify
+```
+
+That is exactly the same chain CI runs (test → typecheck → build → fixture → e2e → repo:hygiene), all in mock mode. The whole run takes a few minutes on a developer laptop.
+
+**Real-provider tests are manual and optional.** The real OpenAI Deal Memo Playwright spec runs only when `E2E_REAL_OPENAI=true` is explicitly set along with the matching server-side and `NEXT_PUBLIC_*` envs — see the "Real mode" section above. CI must never have these set. Do not paste real confidential source documents into any test, fixture, or local debug run; PLATFORM_BRIEF.md §10/§12 apply.
+
 ## Hard rules
 
 - AI does not make final decisions.

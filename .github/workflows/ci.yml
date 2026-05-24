@@ -1,0 +1,92 @@
+# ContractOps AI — mock-mode CI gate (Milestone 2F).
+#
+# This workflow MUST pass on every push and pull request. It runs the entire
+# verification gauntlet in mock mode only — no real LLM API keys are needed
+# and none are supplied. Real-provider tests (the OpenAI gated Playwright
+# spec under packages/web/e2e/real-openai-deal-memo.spec.ts) auto-skip
+# because E2E_REAL_OPENAI is not set.
+#
+# Rules this gate enforces (PLATFORM_BRIEF.md §12, CLAUDE.md §5):
+#   - Mock mode is the default and remains operable.
+#   - No real LLM API keys are required to ship.
+#   - No confidential source documents may be in tests or fixtures.
+#
+# If you need to run a real-provider seam end-to-end, do it manually on a
+# local machine with the env vars described in README.md — never from CI.
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Make sure each push to a PR cancels the in-flight run for the same ref so
+# we do not waste CI minutes on superseded commits.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Mock-mode verification gauntlet
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    env:
+      # Mock mode is mandatory in CI. Even if a future contributor accidentally
+      # adds keys to repo secrets, these explicit values prevent escalation:
+      # selectProvider() refuses to escalate without USE_REAL_LLM=true.
+      USE_REAL_LLM: "false"
+      NEXT_PUBLIC_USE_REAL_LLM: "false"
+      NEXT_PUBLIC_LLM_MODE: "MOCK"
+      NEXT_PUBLIC_LLM_PROVIDER_ID: "mock"
+      # The gated real-OpenAI Playwright spec MUST stay skipped in CI.
+      E2E_REAL_OPENAI: "false"
+      CI: "true"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: "npm"
+
+      - name: Install dependencies (npm ci)
+        run: npm ci
+
+      - name: Unit tests (vitest)
+        run: npm test
+
+      - name: TypeScript typecheck (tsc --noEmit)
+        run: npm exec tsc -- --noEmit
+
+      - name: Next.js production build (mock-mode bundle)
+        run: npm run build -w @contractops/web
+
+      - name: End-to-end fixture (CLI mock walkthrough)
+        run: npm run fixture
+
+      - name: Install Playwright Chromium
+        run: npm exec -w @contractops/web -- playwright install --with-deps chromium
+
+      - name: Playwright E2E (mock-mode; real-provider specs auto-skip)
+        run: npm run e2e -w @contractops/web
+
+      - name: Repository hygiene (no build output, secrets, or env files)
+        run: npm run repo:hygiene
+
+      - name: Upload Playwright report on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: |
+            packages/web/playwright-report
+            packages/web/test-results
+          retention-days: 7
+          if-no-files-found: ignore
