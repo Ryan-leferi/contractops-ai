@@ -7,10 +7,7 @@ export type { ProjectState } from "@contractops/core";
 export interface AppStore {
   projectIds: string[];
   projects: Record<string, core.ProjectState>;
-  /**
-   * Flat audit collection. Persisted to a separate AppendOnlyRepository in the
-   * store provider. Listed in this app-level shape for convenient rendering.
-   */
+  /** Flat audit collection. Persisted via AppendOnlyRepository. */
   audits: S.AuditLog[];
 }
 
@@ -42,10 +39,30 @@ export function makeEnv(): core.Env {
   };
 }
 
+/**
+ * Build a per-call AggregateContext. The MockProvider is configured with
+ * Playbook-driven canned responses so the UI demo shows richer content than
+ * the bare DEFAULT_MOCK_JSON_RESPONSES would produce.
+ *
+ * Real-provider wiring lands in a later milestone: at that point this helper
+ * will delegate to `selectProvider(env_config)` when `USE_REAL_LLM` is set.
+ */
+export function buildAggregateContext(state: core.ProjectState): core.AggregateContext {
+  const provider = core.createMockProvider({
+    json_responses: buildPlaybookCannedResponses(state),
+  });
+  return {
+    provider,
+    env_config: core.DEFAULT_ENV_CONFIG,
+    env: makeEnv(),
+    actor: DEMO_LAWYER,
+  };
+}
+
 // ---------- Web action wrappers ----------
 //
-// Each wrapper returns a `core.AggregateResult` (state + audits). They inject
-// demo actors and an env — that's all. No workflow logic lives here.
+// Sync ops (no agent) — direct pass-through. Async ops (agent-backed) build a
+// fresh AggregateContext each call.
 
 export function actCreateProject(name: string): core.AggregateResult {
   return core.aggCreateProject({ name, created_by: DEMO_USER }, makeEnv());
@@ -64,6 +81,22 @@ export function actAddSource(
   args: ActAddSourceArgs,
 ): core.AggregateResult {
   return core.aggAddSource(state, { ...args, uploaded_by: DEMO_USER }, makeEnv());
+}
+
+export function actAddSourceContent(
+  state: core.ProjectState,
+  args: { source_document_id: string; text_content: string; language?: string | null },
+): core.AggregateResult {
+  return core.aggAddSourceContent(
+    state,
+    {
+      source_document_id: args.source_document_id,
+      text_content: args.text_content,
+      language: args.language ?? null,
+      is_synthetic: true,
+    },
+    makeEnv(),
+  );
 }
 
 export function actLockSourcePack(state: core.ProjectState): core.AggregateResult {
@@ -103,36 +136,31 @@ export function actAnswerIntake(
   );
 }
 
-export function actDraftDealMemo(state: core.ProjectState): core.AggregateResult {
-  return core.aggDraftDealMemo(
-    state,
-    { content: mockDealMemoContent(state), drafter: DEMO_USER },
-    makeEnv(),
-  );
+// Agent-backed (async) wrappers — each builds a fresh AggregateContext so the
+// per-project canned mock responses reflect the latest state.
+
+export async function actDraftDealMemo(state: core.ProjectState): Promise<core.AggregateResult> {
+  return core.aggDraftDealMemo(state, buildAggregateContext(state));
 }
 
 export function actApproveDealMemo(state: core.ProjectState): core.AggregateResult {
   return core.aggApproveDealMemo(state, DEMO_LAWYER, makeEnv());
 }
 
-export function actDraftDraftingPlan(state: core.ProjectState): core.AggregateResult {
-  return core.aggDraftDraftingPlan(
-    state,
-    { content: mockDraftingPlanContent(state), drafter: DEMO_USER },
-    makeEnv(),
-  );
+export async function actDraftDraftingPlan(state: core.ProjectState): Promise<core.AggregateResult> {
+  return core.aggDraftDraftingPlan(state, buildAggregateContext(state));
 }
 
 export function actApproveDraftingPlan(state: core.ProjectState): core.AggregateResult {
   return core.aggApproveDraftingPlan(state, DEMO_LAWYER, makeEnv());
 }
 
-export function actCreateV0(state: core.ProjectState): core.AggregateResult {
-  return core.aggCreateV0(state, { content: mockV0Content(state) }, makeEnv());
+export async function actCreateV0(state: core.ProjectState): Promise<core.AggregateResult> {
+  return core.aggCreateV0(state, buildAggregateContext(state));
 }
 
-export function actRunMockReviews(state: core.ProjectState): core.AggregateResult {
-  return core.aggRunMockReviews(state, { seeds: mockReviewSeeds(state) }, makeEnv());
+export async function actRunMockReviews(state: core.ProjectState): Promise<core.AggregateResult> {
+  return core.aggRunMockReviews(state, buildAggregateContext(state));
 }
 
 export function actDecideIssue(
@@ -146,12 +174,12 @@ export function actDecideIssue(
   );
 }
 
-export function actCreateRevision(state: core.ProjectState): core.AggregateResult {
-  return core.aggCreateRevision(state, {}, makeEnv());
+export async function actCreateRevision(state: core.ProjectState): Promise<core.AggregateResult> {
+  return core.aggCreateRevision(state, buildAggregateContext(state));
 }
 
-export function actRunMockFinalQA(state: core.ProjectState): core.AggregateResult {
-  return core.aggRunMockFinalQA(state, makeEnv());
+export async function actRunMockFinalQA(state: core.ProjectState): Promise<core.AggregateResult> {
+  return core.aggRunMockFinalQA(state, buildAggregateContext(state));
 }
 
 export function actApproveFinal(state: core.ProjectState): core.AggregateResult {
@@ -169,17 +197,143 @@ export function actCreateExport(
   );
 }
 
-// ---------- Mock content generators (no contract-name hardcoding) ----------
+// ---------- Playbook-driven canned mock responses ----------
+//
+// Build per-call MockProvider responses that derive richer placeholder content
+// from the project's current ProjectState. None of this hardcodes any contract
+// product name — everything is read from the loaded Playbook.
 
-export function mockDealMemoContent(state: core.ProjectState): string {
+function rid(prompt_id: string, input_id: string): string {
+  return `${prompt_id}::${input_id}`;
+}
+
+export function buildPlaybookCannedResponses(
+  state: core.ProjectState,
+): Record<string, unknown> {
+  const responses: Record<string, unknown> = {};
+  const playbook = state.playbook;
+  const project_id = state.project.id;
+  const latest = state.contract_versions[state.contract_versions.length - 1];
+
+  if (!playbook) return responses;
+
+  // Deal Memo
+  responses[rid("deal_memo_drafter", project_id)] = {
+    content: composeDealMemo(state),
+    warnings: state.intake_questions
+      .filter((q) => q.required)
+      .filter((q) => !state.intake_answers.some((a) => a.question_id === q.id))
+      .map((q) => `missing intake: ${q.key}`),
+  };
+
+  // Drafting Plan
+  responses[rid("drafting_plan_drafter", project_id)] = {
+    content: composeDraftingPlan(state),
+    table_of_contents: playbook.default_table_of_contents,
+    is_custom: playbook.is_custom_marker,
+    open_questions: [],
+  };
+
+  // v0 draft
+  responses[rid("contract_drafter", project_id)] = {
+    content: composeV0Draft(state),
+    version_number: "v0",
+    notes: [],
+  };
+
+  // Reviewers (only meaningful once a draft exists)
+  if (latest) {
+    const risks = playbook.common_risks.slice(0, 2);
+    const flags = playbook.red_flags.slice(0, 1);
+
+    responses[rid("counterparty_reviewer", latest.id)] = {
+      findings: [
+        ...risks.slice(0, 1).map((text, i) => ({
+          source_agent: "mock_counterparty",
+          severity: "high" as const,
+          location: { article: `제${i + 3}조` },
+          issue_type: "playbook_risk",
+          problem: text,
+          why_it_matters: `Playbook common_risks #${i + 1}: ${text}`,
+          recommended_revision: `Address: ${text}`,
+          business_impact: "moderate",
+          recommended_action: "revise" as const,
+        })),
+        ...flags.map((text, i) => ({
+          source_agent: "mock_counterparty",
+          severity: "critical" as const,
+          location: { article: `제${i + 7}조` },
+          issue_type: "red_flag",
+          problem: text,
+          why_it_matters: `Playbook red_flags: ${text}`,
+          recommended_revision: `Remove or limit: ${text}`,
+          business_impact: "high",
+          recommended_action: "revise" as const,
+        })),
+      ],
+    };
+
+    responses[rid("source_consistency_reviewer", latest.id)] = {
+      findings: risks.slice(1).map((text, i) => ({
+        source_agent: "mock_source_consistency",
+        severity: "medium" as const,
+        location: { article: `제${i + 6}조` },
+        issue_type: "source_inconsistency",
+        problem: text,
+        why_it_matters: "Cross-checked against source documents (mock).",
+        recommended_revision: `Reconcile against sources for: ${text}`,
+        business_impact: "low",
+        recommended_action: "revise" as const,
+      })),
+    };
+
+    responses[rid("legal_style_reviewer", latest.id)] = {
+      findings: [
+        {
+          source_agent: "mock_legal_style",
+          severity: "low" as const,
+          location: {},
+          issue_type: "numbering",
+          problem: "Confirm Korean numbering 제·①·1.·가.",
+          why_it_matters: "Korean drafting convention (PLATFORM_BRIEF.md §6).",
+          recommended_revision: "Apply Korean article/paragraph/item numbering throughout.",
+          business_impact: "low",
+          recommended_action: "accept" as const,
+        },
+      ],
+    };
+
+    // Revision: synthesize a body that includes the rendered version + applied cards.
+    const accepted = state.issue_cards.filter(
+      (c) => c.human_decision === "accepted" || c.human_decision === "partially_accepted",
+    );
+    responses[rid("revision_agent", latest.id)] = {
+      content: composeRevisionBody(state, latest, accepted),
+      applied_issue_card_ids: accepted.map((c) => c.issue_id),
+      notes: [],
+    };
+
+    // Final QA: empty findings by default.
+    responses[rid("final_qa_assistant", latest.id)] = {
+      findings: [],
+      passes: playbook.final_qa_checklist,
+    };
+  }
+
+  return responses;
+}
+
+function composeDealMemo(state: core.ProjectState): string {
+  const playbook = state.playbook!;
   const lines: string[] = [];
   lines.push(`# Mock Deal Memo`);
   lines.push(`Project: ${state.project.name}`);
-  lines.push(`Contract type: ${state.playbook?.contract_type ?? "(unknown)"}`);
+  lines.push(`Contract type: ${playbook.contract_type}`);
   lines.push(``);
   lines.push(`## Source documents (${state.source_documents.length})`);
   for (const d of state.source_documents) {
-    lines.push(`- [${d.source_type}] ${d.file_name} (v${d.version})`);
+    const hasContent = state.source_contents.some((c) => c.source_document_id === d.id);
+    lines.push(`- [${d.source_type}] ${d.file_name} (v${d.version})${hasContent ? " · content attached" : ""}`);
   }
   lines.push(``);
   lines.push(`## Intake responses`);
@@ -187,37 +341,37 @@ export function mockDealMemoContent(state: core.ProjectState): string {
     const a = state.intake_answers.find((x) => x.question_id === q.id);
     lines.push(`- **${q.key}**: ${a?.value ?? "(unanswered)"}`);
   }
-  if (state.playbook?.common_risks.length) {
+  if (playbook.common_risks.length) {
     lines.push(``);
     lines.push(`## Common risks from Playbook`);
-    for (const r of state.playbook.common_risks) lines.push(`- ${r}`);
+    for (const r of playbook.common_risks) lines.push(`- ${r}`);
   }
   return lines.join("\n");
 }
 
-export function mockDraftingPlanContent(state: core.ProjectState): string {
-  const playbook = state.playbook;
+function composeDraftingPlan(state: core.ProjectState): string {
+  const playbook = state.playbook!;
   const lines: string[] = [];
   lines.push(`# Mock Drafting Plan`);
-  lines.push(`Contract type: ${playbook?.contract_type ?? "(unknown)"}`);
-  if (playbook?.is_custom_marker) {
+  lines.push(`Contract type: ${playbook.contract_type}`);
+  if (playbook.is_custom_marker) {
     lines.push(`**Mode: Custom Contract — human-approved Drafting Plan required before drafting.**`);
   } else {
     lines.push(`Mode: Standard Playbook`);
   }
   lines.push(``);
   lines.push(`## Table of Contents`);
-  if (playbook?.default_table_of_contents.length) {
+  if (playbook.default_table_of_contents.length) {
     for (const toc of playbook.default_table_of_contents) lines.push(`- ${toc}`);
   } else {
     lines.push(`- (to be defined ad-hoc)`);
   }
-  if (playbook?.mandatory_clauses.length) {
+  if (playbook.mandatory_clauses.length) {
     lines.push(``);
     lines.push(`## Mandatory clauses`);
     for (const c of playbook.mandatory_clauses) lines.push(`- ${c.heading} (\`${c.key}\`)`);
   }
-  if (playbook?.negotiation_positions.length) {
+  if (playbook.negotiation_positions.length) {
     lines.push(``);
     lines.push(`## Negotiation positions`);
     for (const p of playbook.negotiation_positions) lines.push(`- ${p}`);
@@ -225,9 +379,9 @@ export function mockDraftingPlanContent(state: core.ProjectState): string {
   return lines.join("\n");
 }
 
-export function mockV0Content(state: core.ProjectState): string {
-  const playbook = state.playbook;
-  const toc = playbook?.default_table_of_contents ?? [];
+function composeV0Draft(state: core.ProjectState): string {
+  const playbook = state.playbook!;
+  const toc = playbook.default_table_of_contents;
   if (toc.length === 0) {
     return [
       `[MOCK v0 DRAFT — Custom Contract]`,
@@ -238,61 +392,23 @@ export function mockV0Content(state: core.ProjectState): string {
     ].join("\n");
   }
   const articles = toc
-    .map(
-      (heading) =>
-        `${heading}\n  [Mock body for ${heading} — derived from Playbook + Drafting Plan]`,
-    )
+    .map((heading) => `${heading}\n  [Mock body for ${heading} — derived from Playbook + Drafting Plan]`)
     .join("\n\n");
-  return `[MOCK v0 DRAFT — ${playbook?.contract_type}]\n\n${articles}`;
+  return `[MOCK v0 DRAFT — ${playbook.contract_type}]\n\n${articles}`;
 }
 
-export function mockReviewSeeds(state: core.ProjectState): core.ReviewSeed[] {
-  const playbook = state.playbook;
-  const seeds: core.ReviewSeed[] = [];
-  const risks = playbook?.common_risks.slice(0, 2) ?? [];
-  const flags = playbook?.red_flags.slice(0, 1) ?? [];
-
-  risks.forEach((r, i) => {
-    seeds.push({
-      source_agent: i === 0 ? "mock_claude" : "mock_gemini",
-      severity: i === 0 ? "high" : "medium",
-      location: { article: `제${i + 3}조` },
-      issue_type: "playbook_risk",
-      problem: r,
-      why_it_matters: `Playbook common risk: ${r}`,
-      recommended_revision: `Tighten language to address: ${r}`,
-      business_impact: "moderate",
-      recommended_action: "revise",
-    });
-  });
-
-  flags.forEach((f, i) => {
-    seeds.push({
-      source_agent: "mock_claude",
-      severity: "critical",
-      location: { article: `제${i + 7}조` },
-      issue_type: "red_flag",
-      problem: f,
-      why_it_matters: `Playbook red flag: ${f}`,
-      recommended_revision: `Remove or limit: ${f}`,
-      business_impact: "high",
-      recommended_action: "revise",
-    });
-  });
-
-  seeds.push({
-    source_agent: "mock_python_qa",
-    severity: "low",
-    location: {},
-    issue_type: "numbering",
-    problem: "Confirm Korean numbering 제·①·1.·가.",
-    why_it_matters: "Korean drafting convention (PLATFORM_BRIEF.md §6).",
-    recommended_revision: "Apply Korean article/paragraph/item numbering throughout.",
-    business_impact: "low",
-    recommended_action: "accept",
-  });
-
-  return seeds;
+function composeRevisionBody(
+  state: core.ProjectState,
+  prev: S.ContractVersion,
+  appliedCards: S.IssueCard[],
+): string {
+  const sections = appliedCards.map((c) =>
+    c.partial_note
+      ? `[Partial revision for ${c.issue_id} (partial_note=${c.partial_note}): ${c.recommended_revision}]`
+      : `[Revision for ${c.issue_id}: ${c.recommended_revision}]`,
+  );
+  if (sections.length === 0) return prev.content;
+  return [prev.content, ...sections].join("\n\n");
 }
 
 // ---------- Export content placeholders (no commentary in clean) ----------

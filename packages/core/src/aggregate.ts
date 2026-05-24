@@ -10,11 +10,6 @@ import type {
   Actor,
   AuditLog,
   ExportType,
-  IntakeAnswer,
-  IntakeQuestion,
-  IssueLocation,
-  IssueRecommendedAction,
-  IssueSeverity,
   Playbook,
   SourceType,
 } from "@contractops/schemas";
@@ -26,7 +21,6 @@ import { approveDealMemo, createDealMemo } from "./deal-memo";
 import { approveDraftingPlan, createDraftingPlan } from "./drafting-plan";
 import type { Env } from "./env";
 import { createExportPlaceholder } from "./export";
-import { runMockFinalQA } from "./final-qa";
 import {
   answerIntakeQuestion,
   generateRequiredIntakeQuestions,
@@ -40,13 +34,25 @@ import { selectPlaybook } from "./playbook";
 import { assertStatusAtLeast, assertStatusOneOf, withStatus } from "./project-status";
 import { createProject } from "./project";
 import { createRevisionVersion } from "./revision";
-import { recordMockAgentRun } from "./agent-run";
 import {
   addSourceDocument,
+  buildSourceContent,
   createSourcePack,
   lockSourcePack,
 } from "./source";
 import { emptyProjectState, type ProjectState } from "./state";
+import type { AggregateContext } from "./agg-context";
+import {
+  runContractDrafter,
+  runCounterpartyReviewer,
+  runDealMemoDrafter,
+  runDraftingPlanDrafter,
+  runFinalQAAssistant,
+  runLegalStyleReviewer,
+  runRevisionAgent,
+  runSourceConsistencyReviewer,
+} from "./agents/roles";
+import type { AgentRun, IssueCardFinding } from "@contractops/schemas";
 
 export interface AggregateResult {
   state: ProjectState;
@@ -111,6 +117,51 @@ export function aggAddSource(
       source_documents: [...state.source_documents, res.document],
     },
     audits: [res.audit],
+  };
+}
+
+// ---------- Source content ----------
+
+export interface AggAddSourceContentInput {
+  source_document_id: string;
+  text_content: string;
+  language?: string | null;
+  is_synthetic?: boolean;
+}
+
+/**
+ * Attach (or replace) the text body of a SourceDocument. SourceDocumentContent
+ * is stored on ProjectState alongside SourceDocument metadata — but the two
+ * remain logically distinct entities, keyed independently.
+ *
+ * Allowed at any pre-final-approval status, including after Source Pack lock:
+ * the lock prevents adding or removing documents, but typing the body of an
+ * already-uploaded document does not change the pack.
+ */
+export function aggAddSourceContent(
+  state: ProjectState,
+  input: AggAddSourceContentInput,
+  env: Env,
+): AggregateResult {
+  assertStatusAtLeast(state.project.status, "sources_uploaded");
+  const doc = state.source_documents.find((d) => d.id === input.source_document_id);
+  if (!doc) {
+    throw new Error(`source document ${input.source_document_id} not found`);
+  }
+  const content: ReturnType<typeof buildSourceContent> = buildSourceContent({
+    source_document_id: input.source_document_id,
+    project_id: state.project.id,
+    text_content: input.text_content,
+    language: input.language ?? null,
+    is_synthetic: input.is_synthetic ?? true,
+    env,
+  });
+  const others = state.source_contents.filter(
+    (c) => c.source_document_id !== input.source_document_id,
+  );
+  return {
+    state: { ...state, source_contents: [...others, content] },
+    audits: [],
   };
 }
 
@@ -245,36 +296,48 @@ export function aggAnswerIntake(
 
 // ---------- Deal Memo ----------
 
-export interface AggDraftDealMemoInput {
-  content: string;
-  drafter: Actor;
-  source_agent?: string;
-}
-
-export function aggDraftDealMemo(
+/**
+ * Agent-backed draft: calls `runDealMemoDrafter` which calls the provider.
+ * Entity content comes from provider output. Exactly one AgentRun is recorded
+ * (via runAgent inside the role function — no double recording).
+ */
+export async function aggDraftDealMemo(
   state: ProjectState,
-  input: AggDraftDealMemoInput,
-  env: Env,
-): AggregateResult {
+  ctx: AggregateContext,
+): Promise<AggregateResult> {
   assertStatusOneOf(state.project.status, ["intake_in_progress"]);
+  if (!state.playbook) throw new Error("playbook missing despite intake_in_progress status");
+
+  const result = await runDealMemoDrafter({
+    provider: ctx.provider,
+    env: ctx.env,
+    input: {
+      project_id: state.project.id,
+      playbook: state.playbook,
+      source_documents: state.source_documents,
+      source_contents: state.source_contents,
+      intake_questions: state.intake_questions,
+      intake_answers: state.intake_answers,
+    },
+  });
+  if (!result.output) {
+    throw new Error(
+      `Deal Memo drafter failed: ${result.agent_run.error_message ?? "unknown error"}`,
+    );
+  }
+
   const deal_memo = createDealMemo({
     project_id: state.project.id,
-    content: input.content,
-    env,
+    content: result.output.content,
+    env: ctx.env,
   });
-  const run = recordMockAgentRun({
-    project_id: state.project.id,
-    source_agent: input.source_agent ?? "mock_gpt",
-    role: "deal_memo_drafter",
-    output_json: { deal_memo_id: deal_memo.id, length: input.content.length },
-    env,
-  });
+
   return {
     state: {
       ...state,
       project: withStatus(state.project, "deal_memo_drafted"),
       deal_memo,
-      agent_runs: [...state.agent_runs, run],
+      agent_runs: [...state.agent_runs, result.agent_run],
     },
     audits: [],
   };
@@ -306,41 +369,42 @@ export function aggApproveDealMemo(
 
 // ---------- Drafting Plan ----------
 
-export interface AggDraftDraftingPlanInput {
-  content: string;
-  drafter: Actor;
-  source_agent?: string;
-}
-
-export function aggDraftDraftingPlan(
+export async function aggDraftDraftingPlan(
   state: ProjectState,
-  input: AggDraftDraftingPlanInput,
-  env: Env,
-): AggregateResult {
+  ctx: AggregateContext,
+): Promise<AggregateResult> {
   assertStatusOneOf(state.project.status, ["deal_memo_approved"]);
   if (!state.playbook) throw new Error("playbook missing despite deal_memo_approved status");
+
+  const result = await runDraftingPlanDrafter({
+    provider: ctx.provider,
+    env: ctx.env,
+    input: {
+      project_id: state.project.id,
+      playbook: state.playbook,
+      intake_questions: state.intake_questions,
+      intake_answers: state.intake_answers,
+    },
+  });
+  if (!result.output) {
+    throw new Error(
+      `Drafting Plan drafter failed: ${result.agent_run.error_message ?? "unknown error"}`,
+    );
+  }
+
   const drafting_plan = createDraftingPlan({
     project_id: state.project.id,
-    content: input.content,
+    content: result.output.content,
     playbook: state.playbook,
-    env,
+    env: ctx.env,
   });
-  const run = recordMockAgentRun({
-    project_id: state.project.id,
-    source_agent: input.source_agent ?? "mock_gpt",
-    role: "drafting_plan_drafter",
-    output_json: {
-      drafting_plan_id: drafting_plan.id,
-      is_custom: drafting_plan.is_custom,
-    },
-    env,
-  });
+
   return {
     state: {
       ...state,
       project: withStatus(state.project, "drafting_plan_drafted"),
       drafting_plan,
-      agent_runs: [...state.agent_runs, run],
+      agent_runs: [...state.agent_runs, result.agent_run],
     },
     audits: [],
   };
@@ -372,107 +436,123 @@ export function aggApproveDraftingPlan(
 
 // ---------- v0 draft ----------
 
-export interface AggCreateV0Input {
-  content: string;
-  source_agent?: string;
-}
-
-export function aggCreateV0(
+export async function aggCreateV0(
   state: ProjectState,
-  input: AggCreateV0Input,
-  env: Env,
-): AggregateResult {
+  ctx: AggregateContext,
+): Promise<AggregateResult> {
   assertStatusOneOf(state.project.status, ["drafting_plan_approved"]);
   if (!state.playbook || !state.deal_memo || !state.drafting_plan) {
     throw new Error("prerequisites missing despite drafting_plan_approved status");
   }
+
+  const result = await runContractDrafter({
+    provider: ctx.provider,
+    env: ctx.env,
+    input: {
+      project_id: state.project.id,
+      playbook: state.playbook,
+      drafting_plan_content: state.drafting_plan.content,
+      source_documents: state.source_documents,
+      source_contents: state.source_contents,
+      intake_answers: state.intake_answers,
+    },
+  });
+  if (!result.output) {
+    throw new Error(
+      `Contract drafter failed: ${result.agent_run.error_message ?? "unknown error"}`,
+    );
+  }
+
   const version = createDraftVersion({
     project_id: state.project.id,
     source_pack: state.source_pack,
     playbook: state.playbook,
     deal_memo: state.deal_memo,
     drafting_plan: state.drafting_plan,
-    content: input.content,
-    env,
+    content: result.output.content,
+    created_by_agent: result.agent_run.source_agent,
+    env: ctx.env,
   });
-  const run = recordMockAgentRun({
+
+  // Agent-backed audit: payload carries provider provenance so a lawyer can
+  // later distinguish mock-mode and real-mode draft origins.
+  const audit = createAuditLog({
     project_id: state.project.id,
-    source_agent: input.source_agent ?? "mock_gpt_drafter",
-    role: "contract_drafter",
-    output_json: { version_id: version.id, version_number: version.version_number },
-    env,
+    actor: ctx.actor,
+    event_type: "draft_created",
+    ref_id: version.id,
+    payload: {
+      version_id: version.id,
+      version_number: version.version_number,
+      provider_id: result.agent_run.provider_id,
+      mode: result.agent_run.mode,
+      role: result.agent_run.role,
+      agent_run_id: result.agent_run.id,
+    },
+    env: ctx.env,
   });
+
   return {
     state: {
       ...state,
       project: withStatus(state.project, "draft_v0_created"),
       contract_versions: [...state.contract_versions, version],
-      agent_runs: [...state.agent_runs, run],
+      agent_runs: [...state.agent_runs, result.agent_run],
     },
-    audits: [],
+    audits: [audit],
   };
 }
 
-// ---------- Mock reviews ----------
+// ---------- Reviews ----------
 
-export interface ReviewSeed {
-  source_agent: string;
-  severity: IssueSeverity;
-  location: IssueLocation;
-  issue_type: string;
-  problem: string;
-  why_it_matters: string;
-  recommended_revision: string;
-  business_impact: string;
-  recommended_action: IssueRecommendedAction;
-}
-
-export interface AggRunMockReviewsInput {
-  seeds: ReviewSeed[];
-  /**
-   * Which mock providers produced these findings. Used to create one AgentRun
-   * per provider for traceability. Defaults to `["mock_claude", "mock_gemini",
-   * "mock_korean_style", "mock_python_qa"]`.
-   */
-  providers?: { source_agent: string; role: "counterparty_reviewer" | "source_consistency_reviewer" | "legal_style_reviewer" | "deterministic_qa" }[];
-}
-
-const DEFAULT_PROVIDERS: NonNullable<AggRunMockReviewsInput["providers"]> = [
-  { source_agent: "mock_claude", role: "counterparty_reviewer" },
-  { source_agent: "mock_gemini", role: "source_consistency_reviewer" },
-  { source_agent: "mock_gpt_korean_style", role: "legal_style_reviewer" },
-  { source_agent: "mock_python_qa", role: "deterministic_qa" },
-];
-
-export function aggRunMockReviews(
+/**
+ * Run all three LLM reviewer agents (counterparty, source consistency, legal
+ * style) against the latest contract version. Each reviewer's findings become
+ * IssueCards. Exactly one AgentRun per reviewer.
+ *
+ * `deterministic_qa` (Python) is intentionally NOT invoked here — it is a
+ * separate non-LLM pass that will be added in a later milestone.
+ */
+export async function aggRunMockReviews(
   state: ProjectState,
-  input: AggRunMockReviewsInput,
-  env: Env,
-): AggregateResult {
-  assertStatusOneOf(state.project.status, ["draft_v0_created", "reviews_in_progress", "issues_open"]);
+  ctx: AggregateContext,
+): Promise<AggregateResult> {
+  assertStatusOneOf(state.project.status, [
+    "draft_v0_created",
+    "reviews_in_progress",
+    "issues_open",
+  ]);
+  if (!state.playbook) throw new Error("playbook missing");
   const latest = state.contract_versions[state.contract_versions.length - 1];
   if (!latest) throw new Error("no version to review");
-  // Advance reviews_in_progress (if we are still at draft_v0_created)
+
   let project = withStatus(state.project, "reviews_in_progress");
 
-  const cards = createIssueCards({
-    seeds: input.seeds.map((s) => ({ ...s, project_id: state.project.id })),
-    env,
-  });
+  const reviewerInput = {
+    project_id: state.project.id,
+    playbook: state.playbook,
+    draft: latest,
+    source_documents: state.source_documents,
+    source_contents: state.source_contents,
+  };
 
-  const providers = input.providers ?? DEFAULT_PROVIDERS;
-  const runs = providers.map((p) =>
-    recordMockAgentRun({
-      project_id: state.project.id,
-      source_agent: p.source_agent,
-      role: p.role,
-      output_json: {
-        version_id: latest.id,
-        issue_count: cards.filter((c) => c.source_agent === p.source_agent).length,
-      },
-      env,
-    }),
-  );
+  const [counterRes, sourceRes, styleRes] = await Promise.all([
+    runCounterpartyReviewer({ provider: ctx.provider, env: ctx.env, input: reviewerInput }),
+    runSourceConsistencyReviewer({ provider: ctx.provider, env: ctx.env, input: reviewerInput }),
+    runLegalStyleReviewer({ provider: ctx.provider, env: ctx.env, input: reviewerInput }),
+  ]);
+
+  const allRuns: AgentRun[] = [counterRes.agent_run, sourceRes.agent_run, styleRes.agent_run];
+  const allFindings: IssueCardFinding[] = [
+    ...(counterRes.output?.findings ?? []),
+    ...(sourceRes.output?.findings ?? []),
+    ...(styleRes.output?.findings ?? []),
+  ];
+
+  const cards = createIssueCards({
+    seeds: allFindings.map((f) => ({ ...f, project_id: state.project.id })),
+    env: ctx.env,
+  });
 
   project = withStatus(project, "issues_open");
 
@@ -481,7 +561,7 @@ export function aggRunMockReviews(
       ...state,
       project,
       issue_cards: [...state.issue_cards, ...cards],
-      agent_runs: [...state.agent_runs, ...runs],
+      agent_runs: [...state.agent_runs, ...allRuns],
     },
     audits: [],
   };
@@ -524,22 +604,46 @@ export function aggDecideIssue(
 
 // ---------- Revision + final QA ----------
 
-export interface AggReviseInput {
-  base_content?: string;
-  source_agent?: string;
-}
-
-export function aggCreateRevision(
+/**
+ * Agent-backed revision. The Revision Agent applies ONLY accepted /
+ * partially-accepted Issue Cards. Rejected and deferred cards are excluded
+ * by `createRevisionVersion` (low-level), regardless of what the agent
+ * returns. The agent's output content becomes the new version body.
+ */
+export async function aggCreateRevision(
   state: ProjectState,
-  input: AggReviseInput,
-  env: Env,
-): AggregateResult {
+  ctx: AggregateContext,
+): Promise<AggregateResult> {
   assertStatusAtLeast(state.project.status, "issues_open");
   const prev = state.contract_versions[state.contract_versions.length - 1];
   if (!prev) throw new Error("no previous version to revise");
   if (!state.playbook || !state.deal_memo || !state.drafting_plan) {
     throw new Error("prerequisites missing for revision");
   }
+
+  const acceptedOrPartial = state.issue_cards.filter(
+    (c) => c.human_decision === "accepted" || c.human_decision === "partially_accepted",
+  );
+
+  const result = await runRevisionAgent({
+    provider: ctx.provider,
+    env: ctx.env,
+    input: {
+      project_id: state.project.id,
+      playbook: state.playbook,
+      previous_version: prev,
+      accepted_issue_cards: acceptedOrPartial,
+    },
+  });
+  if (!result.output) {
+    throw new Error(
+      `Revision agent failed: ${result.agent_run.error_message ?? "unknown error"}`,
+    );
+  }
+
+  // Low-level `createRevisionVersion` is the workflow's invariant gate — even
+  // if the agent's output suggested applying a rejected card, this layer
+  // filters it out. The agent's `applied_issue_card_ids` is informational.
   const res = createRevisionVersion({
     project_id: state.project.id,
     previous_version: prev,
@@ -548,56 +652,96 @@ export function aggCreateRevision(
     deal_memo: state.deal_memo,
     drafting_plan: state.drafting_plan,
     issue_cards: state.issue_cards,
-    base_content: input.base_content ?? prev.content,
+    base_content: result.output.content,
     next_version_number: `v${state.contract_versions.length}`,
-    env,
+    created_by_agent: result.agent_run.source_agent,
+    env: ctx.env,
   });
-  const run = recordMockAgentRun({
+
+  // Enhanced revision_generated audit carries provider provenance.
+  const enhancedAudit = createAuditLog({
     project_id: state.project.id,
-    source_agent: input.source_agent ?? "mock_reviser",
-    role: "revision_agent",
-    output_json: {
-      version_id: res.version.id,
+    actor: ctx.actor,
+    event_type: "revision_generated",
+    ref_id: res.version.id,
+    payload: {
+      previous_version_id: prev.id,
       applied_issue_card_ids: res.applied_issue_card_ids,
       skipped: res.skipped,
+      provider_id: result.agent_run.provider_id,
+      mode: result.agent_run.mode,
+      role: result.agent_run.role,
+      agent_run_id: result.agent_run.id,
     },
-    env,
+    env: ctx.env,
   });
+
   return {
     state: {
       ...state,
       project: withStatus(state.project, "revised"),
       contract_versions: [...state.contract_versions, res.version],
       issue_cards: res.updated_issue_cards,
-      agent_runs: [...state.agent_runs, run],
+      agent_runs: [...state.agent_runs, result.agent_run],
     },
-    audits: [res.audit],
+    // Replace the low-level audit (from createRevisionVersion) with the
+    // enhanced one. createRevisionVersion's audit lacks provider provenance.
+    audits: [enhancedAudit],
   };
 }
 
-export function aggRunMockFinalQA(
+/**
+ * Agent-backed final QA. Findings (if any) become IssueCards and the workflow
+ * status stays at `revised` (or `issues_open` if any pending findings remain).
+ * The LLM final-QA assistant does NOT replace deterministic Python QA — that
+ * is a separate non-LLM pass tracked under role "deterministic_qa".
+ */
+export async function aggRunMockFinalQA(
   state: ProjectState,
-  env: Env,
-): AggregateResult {
+  ctx: AggregateContext,
+): Promise<AggregateResult> {
   assertStatusOneOf(state.project.status, ["revised", "issues_open"]);
+  if (!state.playbook) throw new Error("playbook missing");
   const latest = state.contract_versions[state.contract_versions.length - 1];
   if (!latest) throw new Error("no version for final QA");
-  const res = runMockFinalQA({ version: latest, env, seeds: [] });
-  const run = recordMockAgentRun({
-    project_id: state.project.id,
-    source_agent: "mock_python_qa_final",
-    role: "final_qa_assistant",
-    output_json: {
-      version_id: latest.id,
-      findings_count: res.issue_cards.length,
+
+  const result = await runFinalQAAssistant({
+    provider: ctx.provider,
+    env: ctx.env,
+    input: {
+      project_id: state.project.id,
+      playbook: state.playbook,
+      version: latest,
     },
-    env,
   });
+  if (!result.output) {
+    throw new Error(
+      `Final QA assistant failed: ${result.agent_run.error_message ?? "unknown error"}`,
+    );
+  }
+
+  const findings = result.output.findings;
+  const cards = createIssueCards({
+    seeds: findings.map((f) => ({
+      source_agent: result.agent_run.source_agent,
+      severity: f.severity,
+      location: f.location,
+      issue_type: f.issue_type,
+      problem: f.problem,
+      why_it_matters: f.problem,
+      recommended_revision: f.recommended_revision,
+      business_impact: "final QA",
+      recommended_action: "revise",
+      project_id: state.project.id,
+    })),
+    env: ctx.env,
+  });
+
   return {
     state: {
       ...state,
-      issue_cards: [...state.issue_cards, ...res.issue_cards],
-      agent_runs: [...state.agent_runs, run],
+      issue_cards: [...state.issue_cards, ...cards],
+      agent_runs: [...state.agent_runs, result.agent_run],
     },
     audits: [],
   };
@@ -667,5 +811,3 @@ export function aggCreateExport(
   };
 }
 
-// Re-export so callers don't need to know which low-level helper to import.
-export { type IntakeAnswer, type IntakeQuestion };

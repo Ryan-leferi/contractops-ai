@@ -9,7 +9,7 @@ import {
 import { humanLawyer, testEnv } from "./helpers";
 import { buildToReadyForReviews } from "./scenarios";
 
-describe("recordMockAgentRun", () => {
+describe("recordMockAgentRun (legacy helper, still available for non-agent provenance)", () => {
   it("populates all required fields and marks mode=mock", () => {
     const env = testEnv();
     const run = recordMockAgentRun({
@@ -36,109 +36,72 @@ describe("recordMockAgentRun", () => {
   });
 });
 
-describe("Aggregate ops create AgentRun records", () => {
-  it("aggDraftDealMemo / aggDraftDraftingPlan / aggCreateV0 each create an AgentRun", () => {
-    const ready = buildToReadyForReviews("nda.json");
-    expect(ready.s.agent_runs.some((r) => r.role === "deal_memo_drafter")).toBe(true);
-    expect(ready.s.agent_runs.some((r) => r.role === "drafting_plan_drafter")).toBe(true);
-    expect(ready.s.agent_runs.some((r) => r.role === "contract_drafter")).toBe(true);
+describe("Agent-backed aggregate ops create AgentRun records (via role agents)", () => {
+  it("aggDraftDealMemo / aggDraftDraftingPlan / aggCreateV0 each produce exactly one AgentRun", async () => {
+    const ready = await buildToReadyForReviews("nda.json");
+    const dealRun = ready.s.agent_runs.filter((r) => r.role === "deal_memo_drafter");
+    const planRun = ready.s.agent_runs.filter((r) => r.role === "drafting_plan_drafter");
+    const draftRun = ready.s.agent_runs.filter((r) => r.role === "contract_drafter");
+    expect(dealRun.length).toBe(1);
+    expect(planRun.length).toBe(1);
+    expect(draftRun.length).toBe(1);
+    for (const r of [...dealRun, ...planRun, ...draftRun]) {
+      expect(r.mode).toBe("mock");
+      expect(r.provider_id).toBe("mock");
+      expect(r.status).toBe("completed");
+    }
   });
 
-  it("aggRunMockReviews creates one AgentRun per default provider plus IssueCards", () => {
-    const ready = buildToReadyForReviews("nda.json");
-    const res = aggRunMockReviews(
-      ready.s,
-      {
-        seeds: [
-          {
-            source_agent: "mock_claude",
-            severity: "high",
-            location: { article: "제3조" },
-            issue_type: "obligation_scope",
-            problem: "scope too broad",
-            why_it_matters: "risk",
-            recommended_revision: "narrow it",
-            business_impact: "moderate",
-            recommended_action: "revise",
-          },
-          {
-            source_agent: "mock_gemini",
-            severity: "medium",
-            location: { article: "제4조" },
-            issue_type: "source_inconsistency",
-            problem: "schedule mismatch",
-            why_it_matters: "inconsistency",
-            recommended_revision: "reconcile schedule",
-            business_impact: "low",
-            recommended_action: "revise",
-          },
-        ],
-      },
-      ready.env,
+  it("aggRunMockReviews creates exactly one AgentRun per reviewer agent (3 total)", async () => {
+    const ready = await buildToReadyForReviews("nda.json");
+    const res = await aggRunMockReviews(ready.s, ready.ctx);
+    const newRuns = res.state.agent_runs.filter(
+      (r) => !ready.s.agent_runs.some((p) => p.id === r.id),
     );
-    const reviewRuns = res.state.agent_runs.filter(
-      (r) =>
-        r.role === "counterparty_reviewer" ||
-        r.role === "source_consistency_reviewer" ||
-        r.role === "legal_style_reviewer" ||
-        r.role === "deterministic_qa",
+    const roles = newRuns.map((r) => r.role).sort();
+    expect(roles).toEqual(
+      ["counterparty_reviewer", "legal_style_reviewer", "source_consistency_reviewer"].sort(),
     );
-    expect(reviewRuns.length).toBeGreaterThanOrEqual(4);
-    expect(res.state.issue_cards.length).toBe(2);
-    for (const r of reviewRuns) expect(r.mode).toBe("mock");
+    for (const r of newRuns) expect(r.mode).toBe("mock");
   });
 
-  it("aggCreateRevision creates a revision_agent AgentRun", () => {
-    const ready = buildToReadyForReviews("nda.json");
-    let s = aggRunMockReviews(ready.s, {
-      seeds: [
+  it("aggCreateRevision creates exactly one revision_agent AgentRun", async () => {
+    const ready = await buildToReadyForReviews("nda.json");
+    let s = (await aggRunMockReviews(ready.s, ready.ctx)).state;
+    if (s.issue_cards.length > 0) {
+      s = aggDecideIssue(
+        s,
         {
-          source_agent: "mock_claude",
-          severity: "low",
-          location: {},
-          issue_type: "x",
-          problem: "x",
-          why_it_matters: "x",
-          recommended_revision: "x",
-          business_impact: "x",
-          recommended_action: "accept",
+          issue_id: s.issue_cards[0]!.issue_id,
+          decision: "accepted",
+          decided_by: humanLawyer,
         },
-      ],
-    }, ready.env).state;
-    s = aggDecideIssue(s, {
-      issue_id: s.issue_cards[0]!.issue_id,
-      decision: "accepted",
-      decided_by: humanLawyer,
-    }, ready.env).state;
-    const rev = aggCreateRevision(s, {}, ready.env);
-    expect(rev.state.agent_runs.some((r) => r.role === "revision_agent")).toBe(true);
+        ready.env,
+      ).state;
+    }
+    const rev = await aggCreateRevision(s, ready.ctx);
+    const revisionRuns = rev.state.agent_runs.filter((r) => r.role === "revision_agent");
+    expect(revisionRuns.length).toBe(1);
+    expect(revisionRuns[0]!.mode).toBe("mock");
   });
 
-  it("aggRunMockFinalQA creates a final_qa_assistant AgentRun", () => {
-    const ready = buildToReadyForReviews("nda.json");
-    let s = aggRunMockReviews(ready.s, {
-      seeds: [
+  it("aggRunMockFinalQA creates exactly one final_qa_assistant AgentRun", async () => {
+    const ready = await buildToReadyForReviews("nda.json");
+    let s = (await aggRunMockReviews(ready.s, ready.ctx)).state;
+    if (s.issue_cards.length > 0) {
+      s = aggDecideIssue(
+        s,
         {
-          source_agent: "mock_claude",
-          severity: "low",
-          location: {},
-          issue_type: "x",
-          problem: "x",
-          why_it_matters: "x",
-          recommended_revision: "x",
-          business_impact: "x",
-          recommended_action: "accept",
+          issue_id: s.issue_cards[0]!.issue_id,
+          decision: "accepted",
+          decided_by: humanLawyer,
         },
-      ],
-    }, ready.env).state;
-    s = aggDecideIssue(s, {
-      issue_id: s.issue_cards[0]!.issue_id,
-      decision: "accepted",
-      decided_by: humanLawyer,
-    }, ready.env).state;
-    s = aggCreateRevision(s, {}, ready.env).state;
-
-    const qa = aggRunMockFinalQA(s, ready.env);
-    expect(qa.state.agent_runs.some((r) => r.role === "final_qa_assistant")).toBe(true);
+        ready.env,
+      ).state;
+    }
+    s = (await aggCreateRevision(s, ready.ctx)).state;
+    const qa = await aggRunMockFinalQA(s, ready.ctx);
+    const qaRuns = qa.state.agent_runs.filter((r) => r.role === "final_qa_assistant");
+    expect(qaRuns.length).toBe(1);
   });
 });

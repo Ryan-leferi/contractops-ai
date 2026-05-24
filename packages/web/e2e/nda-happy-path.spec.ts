@@ -38,6 +38,18 @@ test("NDA happy path — create → sources → confirm → playbook → intake 
   await page.click('[data-testid="add-source-btn"]');
   await expect(page.getByTestId("source-row")).toHaveCount(2);
 
+  // 2-bis. Attach SYNTHETIC text content to the first source document.
+  // Verifies the source-content textarea + SourceDocumentContent flow.
+  const firstRowToggle = page.locator('[data-testid^="toggle-content-"]').first();
+  await firstRowToggle.click();
+  const firstTextarea = page.locator('[data-testid^="source-content-textarea-"]').first();
+  await firstTextarea.fill(
+    "[synthetic] Mock proposal content for E2E. Defines obligations and parties.",
+  );
+  await page.locator('[data-testid^="save-content-"]').first().click();
+  // After save the textarea collapses; "content attached" appears in the row subtitle
+  await expect(page.locator('[data-testid="source-row"]').first()).toContainText("content attached");
+
   // 2a. Source Pack lock prevents new source addition
   page.once("dialog", (d) => d.accept());
   await page.click('[data-testid="lock-pack-btn"]');

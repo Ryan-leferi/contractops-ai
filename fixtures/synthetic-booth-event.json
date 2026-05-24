@@ -41,6 +41,12 @@
     "fee_total": "12,000,000 KRW (VAT excluded)",
     "on_site_sales_allowed": "Not allowed"
   },
+  "source_contents": {
+    "synthetic_event_announcement.pdf": "Synthetic event announcement. Event: Synthetic Industry Expo 2027. Dates: 2027-05-01 to 2027-05-03. Venue: Synthetic Convention Center, Building A. Premium booths include power, network, signage. On-site sales are not permitted. Refunds: 30 days before event 100%, 14 days 50%, after 0%. (Synthetic fixture; no real-world facts.)",
+    "synthetic_booth_operation_guide.pdf": "Synthetic operation guide. Booth setup window opens 2 days before event. Premium A includes 6 sqm, 2 chairs, table, branded backdrop. Operating hours 10:00 to 18:00. Force majeure handled per Article 9. (Synthetic fixture.)",
+    "synthetic_quote.xlsx": "Synthetic quote. Premium A booth fee: 12,000,000 KRW (VAT excluded). Includes setup, electricity, network. Optional: sponsorship upgrade 5,000,000 KRW. Payment terms: 50% on signing, 50% by 2027-04-01. (Synthetic fixture.)",
+    "synthetic_counterparty_email.eml": "From: counterparty@synthetic.example\\nSubject: Booth proposal follow-up\\n\\nWe confirm interest in Premium A booth for the Synthetic Industry Expo 2027. Please send the entry contract for review. We expect refund flexibility for force-majeure cancellations. (Synthetic fixture.)"
+  },
   "issue_decisions": [
     { "match": "first_critical", "decision": "rejected" },
     { "match": "first_high", "decision": "accepted" },

@@ -32,10 +32,10 @@ export default function IssuesPage() {
   const [error, setError] = useState<string | null>(null);
   const [partialDraft, setPartialDraft] = useState<Record<string, string>>({});
 
-  function runReviews() {
+  async function runReviews() {
     try {
       setError(null);
-      applyProjectOp(params.id, (s) => actRunMockReviews(s));
+      await applyProjectOp(params.id, (s) => actRunMockReviews(s));
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }

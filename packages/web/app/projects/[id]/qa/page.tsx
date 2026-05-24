@@ -26,29 +26,29 @@ export default function QAPage() {
   const latest = versions[versions.length - 1];
   const final = versions.find((v) => v.final);
 
-  function runQA() {
+  async function runQA() {
     try {
       setError(null);
-      applyProjectOp(params.id, (s) => actRunMockFinalQA(s));
+      await applyProjectOp(params.id, (s) => actRunMockFinalQA(s));
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
   }
 
-  function revise() {
+  async function revise() {
     try {
       setError(null);
-      applyProjectOp(params.id, (s) => actCreateRevision(s));
+      await applyProjectOp(params.id, (s) => actCreateRevision(s));
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
   }
 
-  function approveFinal() {
+  async function approveFinal() {
     if (!confirm("Approve this version as FINAL? This authorizes external delivery.")) return;
     try {
       setError(null);
-      applyProjectOp(params.id, (s) => actApproveFinal(s));
+      await applyProjectOp(params.id, (s) => actApproveFinal(s));
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }

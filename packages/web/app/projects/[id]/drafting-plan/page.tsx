@@ -15,19 +15,19 @@ export default function DraftingPlanPage() {
   const state = store.projects[params.id]!;
   const [error, setError] = useState<string | null>(null);
 
-  function generate() {
+  async function generate() {
     try {
       setError(null);
-      applyProjectOp(params.id, (s) => actDraftDraftingPlan(s));
+      await applyProjectOp(params.id, (s) => actDraftDraftingPlan(s));
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
   }
 
-  function approve() {
+  async function approve() {
     try {
       setError(null);
-      applyProjectOp(params.id, (s) => actApproveDraftingPlan(s));
+      await applyProjectOp(params.id, (s) => actApproveDraftingPlan(s));
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }

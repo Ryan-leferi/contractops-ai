@@ -3,14 +3,22 @@
 import { useParams } from "next/navigation";
 import { useState } from "react";
 import { useStore } from "@/components/store-provider";
-import { actAddSource, actLockSourcePack } from "@/lib/actions";
+import { actAddSource, actAddSourceContent, actLockSourcePack } from "@/lib/actions";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
-import { Card, CardContent, CardHeader, CardTitle, CardDescription, CardFooter } from "@/components/ui/card";
+import {
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+  CardDescription,
+  CardFooter,
+} from "@/components/ui/card";
 import { formatDateTime } from "@/lib/utils";
-import type { SourceType } from "@contractops/schemas";
+import type { SourceDocument, SourceType } from "@contractops/schemas";
 
 const SOURCE_TYPES: SourceType[] = [
   "proposal",
@@ -25,6 +33,8 @@ const SOURCE_TYPES: SourceType[] = [
   "redline_draft",
 ];
 
+const CONTENT_SOFT_LIMIT = 5 * 1024; // 5KB warning threshold
+
 export default function SourcesPage() {
   const params = useParams<{ id: string }>();
   const { store, applyProjectOp } = useStore();
@@ -38,12 +48,12 @@ export default function SourcesPage() {
   const [incorporated, setIncorporated] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  function add(e: React.FormEvent) {
+  async function add(e: React.FormEvent) {
     e.preventDefault();
     if (!fileName.trim()) return;
     try {
       setError(null);
-      applyProjectOp(params.id, (s) =>
+      await applyProjectOp(params.id, (s) =>
         actAddSource(s, {
           file_name: fileName.trim(),
           source_type: sourceType,
@@ -59,11 +69,11 @@ export default function SourcesPage() {
     }
   }
 
-  function lock() {
+  async function lock() {
     if (!confirm("Lock the Source Pack? No documents can be added or removed after lock.")) return;
     try {
       setError(null);
-      applyProjectOp(params.id, (s) => actLockSourcePack(s));
+      await applyProjectOp(params.id, (s) => actLockSourcePack(s));
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
@@ -75,12 +85,20 @@ export default function SourcesPage() {
         <div>
           <h1 className="text-xl font-semibold">Sources</h1>
           <p className="text-sm text-muted-foreground">
-            Upload (mock) source documents and lock the Source Pack.
+            Upload (mock) source documents and lock the Source Pack. Optional
+            text bodies feed the mock review/draft agents.
           </p>
         </div>
         <Badge variant={locked ? "warning" : "secondary"} data-testid="source-pack-status">
           {locked ? "Locked" : "Open"}
         </Badge>
+      </div>
+
+      <div className="rounded-md border border-warning bg-warning/10 p-3 text-xs">
+        <strong>Synthetic / sample text only.</strong> This is mock mode — do
+        not paste real confidential source documents. Anything pasted here will
+        be stored in localStorage and may be sent to a real LLM provider once
+        real mode is wired (later milestone).
       </div>
 
       {error && (
@@ -158,6 +176,9 @@ export default function SourcesPage() {
       <Card>
         <CardHeader>
           <CardTitle>Source documents ({state.source_documents.length})</CardTitle>
+          <CardDescription>
+            Click a row to attach synthetic text content used by the mock agents.
+          </CardDescription>
         </CardHeader>
         <CardContent>
           {state.source_documents.length === 0 ? (
@@ -165,16 +186,21 @@ export default function SourcesPage() {
           ) : (
             <ul className="text-sm divide-y">
               {state.source_documents.map((d) => (
-                <li key={d.id} className="py-2 flex items-center justify-between gap-2" data-testid="source-row">
-                  <div className="min-w-0">
-                    <div className="font-medium truncate">{d.file_name}</div>
-                    <div className="text-xs text-muted-foreground">
-                      {d.source_type} · v{d.version} · priority {d.source_priority} ·{" "}
-                      {d.incorporated ? "incorporated" : "reference only"}
-                    </div>
-                  </div>
-                  <span className="text-xs text-muted-foreground">{formatDateTime(d.upload_date)}</span>
-                </li>
+                <SourceDocumentRow
+                  key={d.id}
+                  doc={d}
+                  existingContent={state.source_contents.find((c) => c.source_document_id === d.id)?.text_content ?? ""}
+                  onSaveContent={async (text) => {
+                    try {
+                      setError(null);
+                      await applyProjectOp(params.id, (s) =>
+                        actAddSourceContent(s, { source_document_id: d.id, text_content: text }),
+                      );
+                    } catch (e) {
+                      setError(e instanceof Error ? e.message : String(e));
+                    }
+                  }}
+                />
               ))}
             </ul>
           )}
@@ -192,11 +218,84 @@ export default function SourcesPage() {
           ) : (
             <p className="text-xs text-muted-foreground" data-testid="pack-locked-info">
               Locked at {state.source_pack.locked_at ? formatDateTime(state.source_pack.locked_at) : "—"}.
-              Any new source material requires a new Source Pack.
+              Any new source material requires a new Source Pack. (Editing text
+              content of an already-uploaded document is still allowed.)
             </p>
           )}
         </CardFooter>
       </Card>
     </div>
+  );
+}
+
+function SourceDocumentRow({
+  doc,
+  existingContent,
+  onSaveContent,
+}: {
+  doc: SourceDocument;
+  existingContent: string;
+  onSaveContent: (text: string) => Promise<void>;
+}) {
+  const [open, setOpen] = useState(false);
+  const [draft, setDraft] = useState(existingContent);
+  const tooBig = draft.length > CONTENT_SOFT_LIMIT;
+
+  return (
+    <li className="py-2" data-testid="source-row">
+      <div className="flex items-center justify-between gap-2">
+        <div className="min-w-0">
+          <div className="font-medium truncate">{doc.file_name}</div>
+          <div className="text-xs text-muted-foreground">
+            {doc.source_type} · v{doc.version} · priority {doc.source_priority} ·{" "}
+            {doc.incorporated ? "incorporated" : "reference only"}
+            {existingContent ? " · content attached" : ""}
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="text-xs text-muted-foreground">{formatDateTime(doc.upload_date)}</span>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => setOpen(!open)}
+            data-testid={`toggle-content-${doc.id}`}
+          >
+            {open ? "Hide content" : existingContent ? "Edit content" : "Add content"}
+          </Button>
+        </div>
+      </div>
+      {open && (
+        <div className="mt-2 space-y-1">
+          <Textarea
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            placeholder="Paste synthetic content (no real confidential text). Used by the mock review/draft agents."
+            rows={6}
+            data-testid={`source-content-textarea-${doc.id}`}
+          />
+          <div className="flex items-center justify-between">
+            <div className="text-xs text-muted-foreground">
+              {draft.length.toLocaleString()} characters
+              {tooBig && (
+                <span className="text-warning ml-2">
+                  ⚠ over 5KB — mock prompts will truncate.
+                </span>
+              )}
+            </div>
+            <Button
+              size="sm"
+              onClick={async () => {
+                await onSaveContent(draft);
+                setOpen(false);
+              }}
+              disabled={!draft.trim()}
+              data-testid={`save-content-${doc.id}`}
+            >
+              Save content
+            </Button>
+          </div>
+        </div>
+      )}
+    </li>
   );
 }

@@ -15,10 +15,10 @@ export default function DraftPage() {
   const state = store.projects[params.id]!;
   const [error, setError] = useState<string | null>(null);
 
-  function generate() {
+  async function generate() {
     try {
       setError(null);
-      applyProjectOp(params.id, (s) => actCreateV0(s));
+      await applyProjectOp(params.id, (s) => actCreateV0(s));
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }

@@ -1,13 +1,15 @@
 /**
- * Prompt template loading + minimal rendering.
+ * Prompt template cache + minimal rendering. Browser-safe — no Node imports.
  *
- * Templates live as Markdown files under `prompts/` at the repo root. They use
- * `{{variable}}` placeholders that are replaced by `renderPromptTemplate`.
+ * Callers must populate the cache before any agent runs:
+ *   - In the web: `PromptsProvider` fetches /api/prompts and calls
+ *     `setPromptTemplate` for each.
+ *   - In the CLI / vitest: `preloadPromptsFromDisk()` (Node-only helper
+ *     defined in tests/CLI) reads the prompts/ directory and calls
+ *     `setPromptTemplate`.
  *
- * `loadPromptTemplate` reads from the file system (Node only). Browser
- * callers must inject templates via `setPromptTemplate` first, or pass
- * `template:` directly to the role functions. Node-only modules are
- * lazy-imported inside `loadPromptTemplate` so this module stays browser-safe.
+ * `loadPromptTemplate` throws if the requested id is not in the cache —
+ * deliberately, to force callers to be explicit about template wiring.
  */
 
 const PROMPT_FILES: Record<string, string> = {
@@ -21,6 +23,8 @@ const PROMPT_FILES: Record<string, string> = {
   final_qa_assistant: "final_qa_assistant.md",
 };
 
+export const PROMPT_FILE_INDEX: Readonly<Record<string, string>> = PROMPT_FILES;
+
 export const PROMPT_VERSION = "v1";
 
 const cache = new Map<string, string>();
@@ -28,39 +32,16 @@ const cache = new Map<string, string>();
 export function loadPromptTemplate(prompt_id: string): string {
   const cached = cache.get(prompt_id);
   if (cached !== undefined) return cached;
-  const file = PROMPT_FILES[prompt_id];
-  if (!file) {
+  if (!(prompt_id in PROMPT_FILES)) {
     throw new Error(`Unknown prompt id: ${prompt_id}`);
   }
-  // Lazy `require` via eval keeps Next.js / webpack from statically
-  // resolving node:fs into the client bundle. `loadPromptTemplate` is
-  // Node-only; the web injects templates via `setPromptTemplate` or passes
-  // `template:` overrides directly.
-  const dynamicRequire =
-    typeof globalThis === "object" &&
-    typeof (globalThis as { require?: unknown }).require === "function"
-      ? // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        ((globalThis as any).require as NodeJS.Require)
-      : // eslint-disable-next-line @typescript-eslint/no-implied-eval, no-eval
-        (eval("require") as NodeJS.Require);
-  const { readFileSync } = dynamicRequire("node:fs") as typeof import("node:fs");
-  const { resolve } = dynamicRequire("node:path") as typeof import("node:path");
-  const promptsDir = resolve(process.cwd(), "prompts");
-  // Fallback: when running from a workspace package, walk up to the repo root.
-  const candidate = resolve(promptsDir, file);
-  let text: string;
-  try {
-    text = readFileSync(candidate, "utf-8");
-  } catch {
-    // Try repo root from packages/<name>
-    const fallback = resolve(process.cwd(), "..", "..", "prompts", file);
-    text = readFileSync(fallback, "utf-8");
-  }
-  cache.set(prompt_id, text);
-  return text;
+  throw new Error(
+    `Prompt template "${prompt_id}" not loaded. Call setPromptTemplate or ` +
+      `(in Node) preload via a helper that reads from prompts/.`,
+  );
 }
 
-/** Inject pre-loaded template text (used by browser/test code). */
+/** Inject pre-loaded template text. Used by the web's PromptsProvider, tests, and CLI. */
 export function setPromptTemplate(prompt_id: string, text: string): void {
   cache.set(prompt_id, text);
 }
@@ -71,7 +52,7 @@ export function clearPromptCache(): void {
 
 /**
  * Minimal `{{variable}}` substitution. Unknown variables expand to an empty
- * string (silent — tests inspect the rendered output directly).
+ * string (silent — callers inspect the rendered output directly).
  */
 export function renderPromptTemplate(
   template: string,

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import "./preload-prompts";
 import {
   STATUS_ORDER,
   WorkflowError,
@@ -18,6 +19,7 @@ import {
   aggSelectPlaybook,
   assertStatusAtLeast,
   assertStatusOneOf,
+  createMockAggregateContext,
   statusRank,
   withStatus,
 } from "@contractops/core";
@@ -69,7 +71,7 @@ describe("Status order and guards", () => {
 });
 
 describe("Project.status advances through expected workflow states", () => {
-  function buildToFinal() {
+  async function buildToFinal() {
     const env = testEnv();
     const created = aggCreateProject({ name: "T", created_by: user }, env);
     let s = created.state;
@@ -119,46 +121,36 @@ describe("Project.status advances through expected workflow states", () => {
       };
     }
 
-    s = aggDraftDealMemo(s, { content: "memo", drafter: user }, env).state;
+    const ctx = createMockAggregateContext({ env, actor: humanLawyer });
+
+    s = (await aggDraftDealMemo(s, ctx)).state;
     expect(s.project.status).toBe("deal_memo_drafted");
 
     s = aggApproveDealMemo(s, humanLawyer, env).state;
     expect(s.project.status).toBe("deal_memo_approved");
 
-    s = aggDraftDraftingPlan(s, { content: "plan", drafter: user }, env).state;
+    s = (await aggDraftDraftingPlan(s, ctx)).state;
     expect(s.project.status).toBe("drafting_plan_drafted");
 
     s = aggApproveDraftingPlan(s, humanLawyer, env).state;
     expect(s.project.status).toBe("drafting_plan_approved");
 
-    s = aggCreateV0(s, { content: "draft" }, env).state;
+    s = (await aggCreateV0(s, ctx)).state;
     expect(s.project.status).toBe("draft_v0_created");
 
-    s = aggRunMockReviews(s, {
-      seeds: [
-        {
-          source_agent: "mock_claude",
-          severity: "low",
-          location: {},
-          issue_type: "x",
-          problem: "x",
-          why_it_matters: "x",
-          recommended_revision: "x",
-          business_impact: "x",
-          recommended_action: "accept",
-        },
-      ],
-    }, env).state;
+    s = (await aggRunMockReviews(s, ctx)).state;
     expect(s.project.status).toBe("issues_open");
 
-    s = aggDecideIssue(s, {
-      issue_id: s.issue_cards[0]!.issue_id,
-      decision: "accepted",
-      decided_by: humanLawyer,
-    }, env).state;
+    if (s.issue_cards.length > 0) {
+      s = aggDecideIssue(s, {
+        issue_id: s.issue_cards[0]!.issue_id,
+        decision: "accepted",
+        decided_by: humanLawyer,
+      }, env).state;
+    }
     expect(s.project.status).toBe("issues_open");
 
-    s = aggCreateRevision(s, {}, env).state;
+    s = (await aggCreateRevision(s, ctx)).state;
     expect(s.project.status).toBe("revised");
 
     s = aggApproveFinal(s, humanLawyer, env).state;
@@ -167,8 +159,8 @@ describe("Project.status advances through expected workflow states", () => {
     return { s, env };
   }
 
-  it("advances through every workflow state in order", () => {
-    const { s } = buildToFinal();
+  it("advances through every workflow state in order", async () => {
+    const { s } = await buildToFinal();
     expect(s.project.status).toBe("final_approved");
   });
 });
@@ -210,19 +202,21 @@ describe("Out-of-order operations fail due to status guard", () => {
     ).toThrowError(/Invalid workflow transition/);
   });
 
-  it("rejects aggDraftDealMemo before intake_in_progress", () => {
+  it("rejects aggDraftDealMemo before intake_in_progress", async () => {
     const env = testEnv();
+    const ctx = createMockAggregateContext({ env });
     const created = aggCreateProject({ name: "T", created_by: user }, env);
-    expect(() =>
-      aggDraftDealMemo(created.state, { content: "x", drafter: user }, env),
-    ).toThrowError(/Invalid workflow transition/);
+    await expect(aggDraftDealMemo(created.state, ctx)).rejects.toThrowError(
+      /Invalid workflow transition/,
+    );
   });
 
-  it("rejects aggCreateV0 before drafting_plan_approved", () => {
+  it("rejects aggCreateV0 before drafting_plan_approved", async () => {
     const env = testEnv();
+    const ctx = createMockAggregateContext({ env });
     const created = aggCreateProject({ name: "T", created_by: user }, env);
-    expect(() =>
-      aggCreateV0(created.state, { content: "x" }, env),
-    ).toThrowError(/Invalid workflow transition/);
+    await expect(aggCreateV0(created.state, ctx)).rejects.toThrowError(
+      /Invalid workflow transition/,
+    );
   });
 });

@@ -1,7 +1,9 @@
 import type {
   Actor,
   AuditLog,
+  SourceContentType,
   SourceDocument,
+  SourceDocumentContent,
   SourcePack,
   SourceType,
 } from "@contractops/schemas";
@@ -113,4 +115,33 @@ export function lockSourcePack(input: LockSourcePackInput): LockSourcePackResult
     env: input.env,
   });
   return { pack, audit };
+}
+
+// ---------- SourceDocumentContent ----------
+
+export interface BuildSourceContentInput {
+  source_document_id: string;
+  project_id: string;
+  text_content: string;
+  content_type?: SourceContentType;
+  language?: string | null;
+  /**
+   * Must be true in mock mode and in tests/fixtures. Real-production toggling
+   * lands later. Defaults to true so misuses surface in code review rather
+   * than silently passing.
+   */
+  is_synthetic?: boolean;
+  env: Env;
+}
+
+export function buildSourceContent(input: BuildSourceContentInput): SourceDocumentContent {
+  return {
+    source_document_id: input.source_document_id,
+    project_id: input.project_id,
+    content_type: input.content_type ?? "text",
+    text_content: input.text_content,
+    language: input.language ?? null,
+    is_synthetic: input.is_synthetic ?? true,
+    created_at: input.env.now(),
+  };
 }

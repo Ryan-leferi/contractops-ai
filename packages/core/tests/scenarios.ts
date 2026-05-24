@@ -261,6 +261,7 @@ export function buildToV0(playbookFile = "nda.json"): ScenarioState {
 
 // ---------- Aggregate-based scenario helpers (Milestone 1C) ----------
 
+import "./preload-prompts";
 import {
   aggAddSource,
   aggApproveDealMemo,
@@ -272,19 +273,22 @@ import {
   aggDraftDraftingPlan,
   aggLockSourcePack,
   aggSelectPlaybook,
+  createMockAggregateContext,
+  type AggregateContext,
   type ProjectState,
 } from "@contractops/core";
 
 /**
- * Build a ProjectState (aggregate, no auditLogs field) up through the point
- * just after v0 is created, i.e. ready for mock reviews and Issue Card flow.
- * Returns the state, the env, and any audits emitted.
+ * Build a ProjectState up through the point just after v0 is created, i.e.
+ * ready for mock reviews and Issue Card flow. Async because aggDraftDealMemo,
+ * aggDraftDraftingPlan, and aggCreateV0 are agent-backed.
  */
-export function buildToReadyForReviews(playbookFile = "nda.json"): {
+export async function buildToReadyForReviews(playbookFile = "nda.json"): Promise<{
   s: ProjectState;
   env: ReturnType<typeof testEnv>;
   audits: import("@contractops/schemas").AuditLog[];
-} {
+  ctx: AggregateContext;
+}> {
   const env = testEnv();
   const playbooks = loadAllPlaybooks();
   const pb = loadPlaybook(playbookFile);
@@ -343,7 +347,9 @@ export function buildToReadyForReviews(playbookFile = "nda.json"): {
     };
   }
 
-  const draftedMemo = aggDraftDealMemo(s, { content: "memo", drafter: user }, env);
+  const ctx = createMockAggregateContext({ env, actor: humanLawyer });
+
+  const draftedMemo = await aggDraftDealMemo(s, ctx);
   audits.push(...draftedMemo.audits);
   s = draftedMemo.state;
 
@@ -351,7 +357,7 @@ export function buildToReadyForReviews(playbookFile = "nda.json"): {
   audits.push(...approvedMemo.audits);
   s = approvedMemo.state;
 
-  const draftedPlan = aggDraftDraftingPlan(s, { content: "plan", drafter: user }, env);
+  const draftedPlan = await aggDraftDraftingPlan(s, ctx);
   audits.push(...draftedPlan.audits);
   s = draftedPlan.state;
 
@@ -359,9 +365,9 @@ export function buildToReadyForReviews(playbookFile = "nda.json"): {
   audits.push(...approvedPlan.audits);
   s = approvedPlan.state;
 
-  const v0 = aggCreateV0(s, { content: "[MOCK v0]" }, env);
+  const v0 = await aggCreateV0(s, ctx);
   audits.push(...v0.audits);
   s = v0.state;
 
-  return { s, env, audits };
+  return { s, env, audits, ctx };
 }

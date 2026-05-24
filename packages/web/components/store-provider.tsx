@@ -17,26 +17,20 @@ import {
 } from "@/lib/localstorage-repository";
 import { emptyStore, type AppStore } from "@/lib/actions";
 
-const PROJECTS_KEY = "contractops:projects:v2";
-const AUDITS_KEY = "contractops:audits:v2";
+const PROJECTS_KEY = "contractops:projects:v3";
+const AUDITS_KEY = "contractops:audits:v3";
 
 interface StoreContextValue {
   hydrated: boolean;
   store: AppStore;
   /**
-   * Apply an aggregate op against a single project. The op receives the
-   * current ProjectState and must return `{ state, audits }`. The store
-   * persists the new state via Repository and appends any audits via the
-   * append-only repository. Synchronous: callers can wrap in try/catch.
+   * Apply an aggregate op against a single project. The op may be sync or
+   * async (agent-backed). Returns a Promise so callers can await + catch.
    */
   applyProjectOp: (
     projectId: string,
-    op: (state: core.ProjectState) => core.AggregateResult,
-  ) => void;
-  /**
-   * Create a brand-new project. The op receives no state (returns one). The
-   * returned project id is registered and the audits appended.
-   */
+    op: (state: core.ProjectState) => core.AggregateResult | Promise<core.AggregateResult>,
+  ) => Promise<void>;
   createProject: (op: () => core.AggregateResult) => string;
   resetStore: () => void;
 }
@@ -57,7 +51,6 @@ function loadAppStore(): AppStore {
   const projects: Record<string, core.ProjectState> = {};
   for (const p of list) projects[p.project.id] = p;
   const audits = auditRepo.list();
-  // Order projectIds by created_at for deterministic display
   const ids = list
     .slice()
     .sort((a, b) => a.project.created_at.localeCompare(b.project.created_at))
@@ -79,17 +72,14 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const applyProjectOp = useCallback<StoreContextValue["applyProjectOp"]>(
-    (projectId, op) => {
+    async (projectId, op) => {
       const current = storeRef.current.projects[projectId];
       if (!current) throw new Error(`Project ${projectId} not found`);
 
-      // Run op synchronously — throws propagate to caller for try/catch.
-      const { state: next, audits } = op(current);
+      // op may return sync or Promise. await handles both.
+      const { state: next, audits } = await op(current);
 
-      // Persist project state.
       projectRepo.put(next);
-      // Append all audits (append-only enforced — re-running an op that emits
-      // a previously-seen id would throw, which is desirable).
       for (const a of audits) auditRepo.append(a);
 
       const newStore: AppStore = {
