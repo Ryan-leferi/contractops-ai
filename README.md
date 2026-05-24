@@ -46,31 +46,48 @@ npm run e2e -w @contractops/web    # Playwright (mock-mode)
 
 The "LLM mode: MOCK" badge in the app header confirms the default build.
 
-## Real mode (Milestone 2C — OpenAI Deal Memo drafter only)
+## Real mode (Milestone 2E — OpenAI Deal Memo + Claude Counterparty Reviewer)
 
 > **Warning.** Do not paste real confidential source documents into the UI or fixture during real-mode testing. Use sanitized or synthetic text only. The brief's §10 and §12 rules apply.
 
-In Milestone 2C the **Deal Memo drafter** is the *only* role that can be routed to the OpenAI API. All other six roles stay on the mock.
+Two real-provider seams are live:
 
-Copy `.env.example` to `.env.local` and configure:
+| Role | Provider | Server route | Status |
+|---|---|---|---|
+| `deal_memo_drafter` | OpenAI | `/api/agent/deal-memo` | Milestone 2C |
+| `counterparty_reviewer` | Anthropic (Claude) | `/api/agent/counterparty-reviewer` | Milestone 2E |
+
+All other six roles stay on the in-browser mock. API keys live ONLY on the server — the browser uses fetch-only proxy providers.
+
+Copy `.env.example` to `.env.local` and configure (enable one or both):
 
 ```
 USE_REAL_LLM=true
+
+# OpenAI for Deal Memo drafter
 OPENAI_API_KEY=sk-...
 OPENAI_MODEL=gpt-4o-mini
-LLM_PROVIDER_ALLOWLIST=openai
 
+# Anthropic for counterparty reviewer
+ANTHROPIC_API_KEY=sk-ant-...
+ANTHROPIC_MODEL=claude-3-5-sonnet-20241022
+
+# Allow both providers (comma-separated). Real mode refuses to start without this.
+LLM_PROVIDER_ALLOWLIST=openai,anthropic
+
+# Client mirrors (no secrets here)
 NEXT_PUBLIC_USE_REAL_LLM=true
-NEXT_PUBLIC_LLM_PROVIDER_ALLOWLIST=openai
-NEXT_PUBLIC_LLM_MODE=OPENAI
-NEXT_PUBLIC_LLM_PROVIDER_ID=openai
+NEXT_PUBLIC_LLM_PROVIDER_ALLOWLIST=openai,anthropic
+NEXT_PUBLIC_LLM_MODE=REAL
+NEXT_PUBLIC_LLM_PROVIDER_ID=mixed
 NEXT_PUBLIC_OPENAI_MODEL=gpt-4o-mini
+NEXT_PUBLIC_ANTHROPIC_MODEL=claude-3-5-sonnet-20241022
 ```
 
-- `USE_REAL_LLM=false` + an API key present → mock provider is still returned. No silent escalation.
+- `USE_REAL_LLM=false` + any API key present → mock provider is still returned. No silent escalation.
 - `USE_REAL_LLM=true` without `LLM_PROVIDER_ALLOWLIST` → clean error.
-- `USE_REAL_LLM=true` with `openai` allowlisted but `OPENAI_API_KEY` missing → clean error.
-- The OpenAI API key never crosses the browser; the call happens in the server-side route `/api/agent/deal-memo`.
+- `USE_REAL_LLM=true` with a provider allowlisted but its API key missing → clean error.
+- Each role only escalates when (a) its provider is allowlisted AND (b) the matching `NEXT_PUBLIC_*` mirror agrees. The server independently verifies again inside its API route — `USE_REAL_LLM=false` on the server returns HTTP 503 even if the client tries to call.
 
 Gated end-to-end run against the real Deal Memo drafter:
 

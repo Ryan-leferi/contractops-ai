@@ -32,5 +32,11 @@ export {
   type CreateOpenAIProviderInput,
   type OpenAIClientLike,
 } from "./providers/openai-provider";
+export {
+  createAnthropicProvider,
+  ANTHROPIC_DEFAULT_MODEL,
+  type CreateAnthropicProviderInput,
+  type AnthropicClientLike,
+} from "./providers/anthropic-provider";
 export * from "./agents";
 export * from "./qa";

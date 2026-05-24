@@ -16,25 +16,47 @@ const WEB_SRC = resolve(__dirname, "../../web");
  * Real-LLM SDK imports are tightly scoped:
  *
  *   - `openai` may be imported ONLY from
- *     `packages/core/src/providers/openai-provider.ts`.
- *   - Anthropic and Google SDKs MUST NOT be imported anywhere (no real
- *     provider for them in Milestone 2C).
- *   - The web package MUST NOT import any provider SDK (real calls happen
- *     server-side in API routes via the core package).
+ *     `packages/core/src/providers/openai-provider.ts` (Milestone 2C).
+ *   - `@anthropic-ai/sdk` may be imported ONLY from
+ *     `packages/core/src/providers/anthropic-provider.ts` (Milestone 2E).
+ *   - Google SDKs MUST NOT be imported anywhere yet.
+ *   - The web package MUST NOT import any provider SDK directly — real
+ *     calls happen server-side in API routes via the core package.
  */
-const FORBIDDEN_IMPORT_PATTERNS: { pattern: RegExp; name: string }[] = [
-  { pattern: /from\s+["']openai["']/, name: "openai" },
-  { pattern: /require\s*\(\s*["']openai["']\s*\)/, name: "require('openai')" },
+interface ScopedImportRule {
+  pattern: RegExp;
+  name: string;
+  /** Absolute path of the only file where this import is allowed. */
+  allowed_file: string;
+}
+
+const SCOPED_IMPORT_RULES: ScopedImportRule[] = [
+  {
+    pattern: /from\s+["']openai["']/,
+    name: "openai",
+    allowed_file: resolve(CORE_SRC, "providers/openai-provider.ts"),
+  },
+  {
+    pattern: /require\s*\(\s*["']openai["']\s*\)/,
+    name: "require('openai')",
+    allowed_file: resolve(CORE_SRC, "providers/openai-provider.ts"),
+  },
+  {
+    pattern: /from\s+["']@anthropic-ai\/sdk["']/,
+    name: "@anthropic-ai/sdk",
+    allowed_file: resolve(CORE_SRC, "providers/anthropic-provider.ts"),
+  },
+  {
+    pattern: /require\s*\(\s*["']@anthropic-ai\/sdk["']\s*\)/,
+    name: "require('@anthropic-ai/sdk')",
+    allowed_file: resolve(CORE_SRC, "providers/anthropic-provider.ts"),
+  },
 ];
 
 const FORBIDDEN_NEVER: { pattern: RegExp; name: string }[] = [
-  { pattern: /from\s+["']@anthropic-ai\//, name: "@anthropic-ai/*" },
   { pattern: /from\s+["']@google\/generative-ai["']/, name: "@google/generative-ai" },
   { pattern: /from\s+["']@google-cloud\//, name: "@google-cloud/*" },
-  { pattern: /require\s*\(\s*["']@anthropic-ai\//, name: "require('@anthropic-ai/*')" },
 ];
-
-const OPENAI_ALLOWED_FILE = resolve(CORE_SRC, "providers/openai-provider.ts");
 
 function walkTsFiles(dir: string): string[] {
   return readdirSync(dir).flatMap((entry) => {
@@ -52,19 +74,19 @@ function walkTsFiles(dir: string): string[] {
   });
 }
 
-describe("Real LLM SDK imports are tightly scoped (Milestone 2C)", () => {
-  it("`openai` may be imported ONLY from packages/core/src/providers/openai-provider.ts", () => {
+describe("Real LLM SDK imports are tightly scoped (Milestone 2E)", () => {
+  it("each scoped SDK import appears ONLY in its allowed provider file", () => {
     const files = walkTsFiles(CORE_SRC);
-    const violations: { file: string; line: number; text: string }[] = [];
+    const violations: { file: string; line: number; name: string; text: string }[] = [];
     for (const file of files) {
-      if (resolve(file) === OPENAI_ALLOWED_FILE) continue;
       const lines = readFileSync(file, "utf-8").split("\n");
       lines.forEach((line, i) => {
-        for (const { pattern } of FORBIDDEN_IMPORT_PATTERNS) {
-          if (pattern.test(line)) {
+        for (const rule of SCOPED_IMPORT_RULES) {
+          if (rule.pattern.test(line) && resolve(file) !== rule.allowed_file) {
             violations.push({
               file: file.replace(CORE_SRC, "packages/core/src"),
               line: i + 1,
+              name: rule.name,
               text: line.trim(),
             });
           }
@@ -72,15 +94,15 @@ describe("Real LLM SDK imports are tightly scoped (Milestone 2C)", () => {
       });
     }
     if (violations.length > 0) {
-      const msg = violations.map((v) => `  ${v.file}:${v.line}  ${v.text}`).join("\n");
-      throw new Error(
-        `openai SDK imported outside the allowed provider file:\n${msg}`,
-      );
+      const msg = violations
+        .map((v) => `  ${v.file}:${v.line} [${v.name}] ${v.text}`)
+        .join("\n");
+      throw new Error(`Scoped SDK import leaked outside its allowed file:\n${msg}`);
     }
     expect(violations).toEqual([]);
   });
 
-  it("Anthropic / Google SDKs are not imported anywhere in core", () => {
+  it("Google SDKs are not imported anywhere in core", () => {
     const files = walkTsFiles(CORE_SRC);
     const violations: { file: string; line: number; match: string; text: string }[] = [];
     for (const file of files) {
@@ -103,10 +125,14 @@ describe("Real LLM SDK imports are tightly scoped (Milestone 2C)", () => {
 
   it("packages/web/* does not import any provider SDK directly", () => {
     const files = walkTsFiles(WEB_SRC);
-    const allForbidden = [...FORBIDDEN_IMPORT_PATTERNS, ...FORBIDDEN_NEVER];
+    // In the web package, no scoped SDK is allowed anywhere — even the
+    // scoped-allowed paths point inside core, not the web.
+    const allForbidden = [
+      ...SCOPED_IMPORT_RULES.map((r) => ({ pattern: r.pattern, name: r.name })),
+      ...FORBIDDEN_NEVER,
+    ];
     const violations: { file: string; line: number; match: string; text: string }[] = [];
     for (const file of files) {
-      // Skip the e2e + test directories
       if (file.includes("e2e") || file.includes("node_modules") || file.includes(".next")) continue;
       const lines = readFileSync(file, "utf-8").split("\n");
       lines.forEach((line, i) => {
@@ -137,6 +163,7 @@ describe("Real LLM SDK imports are tightly scoped (Milestone 2C)", () => {
       GOOGLE_API_KEY: null,
       LLM_PROVIDER_ALLOWLIST: ["openai"],
       OPENAI_MODEL: null,
+      ANTHROPIC_MODEL: null,
       LLM_LOG_PROMPTS: false,
     });
     expect(p.provider_id).toBe("openai");
@@ -152,6 +179,7 @@ describe("Real LLM SDK imports are tightly scoped (Milestone 2C)", () => {
         GOOGLE_API_KEY: null,
         LLM_PROVIDER_ALLOWLIST: [],
         OPENAI_MODEL: null,
+        ANTHROPIC_MODEL: null,
         LLM_LOG_PROMPTS: false,
       }),
     ).toThrow();

@@ -13,6 +13,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { formatDateTime } from "@/lib/utils";
+import { QARunsPanel } from "@/components/qa-runs-panel";
 
 export default function QAPage() {
   const params = useParams<{ id: string }>();
@@ -142,6 +143,8 @@ export default function QAPage() {
           </CardContent>
         </Card>
       )}
+
+      <QARunsPanel runs={state.qa_runs} />
 
       {final && (
         <div className="rounded-md border border-success bg-success/5 p-3 text-sm text-success" data-testid="final-approved-banner">

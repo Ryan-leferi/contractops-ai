@@ -14,6 +14,7 @@ import type {
   SourceDocumentContent,
   SourcePack,
 } from "@contractops/schemas";
+import type { DeterministicQAResult } from "./qa/types";
 
 /**
  * ProjectState — aggregate view of all entities for a single project.
@@ -40,6 +41,12 @@ export interface ProjectState {
   issue_cards: IssueCard[];
   agent_runs: AgentRun[];
   exports: ExportFile[];
+  /**
+   * History of deterministic-QA runs (Milestone 2E). Each entry corresponds
+   * to one `aggRunDeterministicQA` invocation. Persists with the rest of
+   * ProjectState (localStorage round-trip safe — pure JSON).
+   */
+  qa_runs: DeterministicQAResult[];
 }
 
 export function emptyProjectState(
@@ -61,5 +68,6 @@ export function emptyProjectState(
     issue_cards: [],
     agent_runs: [],
     exports: [],
+    qa_runs: [],
   };
 }

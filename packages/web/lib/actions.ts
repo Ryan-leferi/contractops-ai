@@ -53,14 +53,18 @@ export function makeEnv(): core.Env {
  * it never reaches the browser. All other roles stay on the mock.
  */
 import { createOpenAIProxyProvider } from "./openai-proxy-provider";
+import { createAnthropicProxyProvider } from "./anthropic-proxy-provider";
 
-function realDealMemoEnabledOnClient(): boolean {
+function realModeOn(): boolean {
   const useReal = (process.env.NEXT_PUBLIC_USE_REAL_LLM ?? "false").toLowerCase();
-  if (useReal !== "true" && useReal !== "1") return false;
-  const allow = (process.env.NEXT_PUBLIC_LLM_PROVIDER_ALLOWLIST ?? "")
+  return useReal === "true" || useReal === "1";
+}
+
+function allowlist(): string[] {
+  return (process.env.NEXT_PUBLIC_LLM_PROVIDER_ALLOWLIST ?? "")
     .split(",")
-    .map((s) => s.trim());
-  return allow.includes("openai");
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
 }
 
 export function buildAggregateContext(state: core.ProjectState): core.AggregateContext {
@@ -68,10 +72,24 @@ export function buildAggregateContext(state: core.ProjectState): core.AggregateC
     json_responses: buildPlaybookCannedResponses(state),
   });
 
-  const realDealMemoProvider: core.LLMProvider | null = realDealMemoEnabledOnClient()
+  // Real-mode provider seams. Each role only escalates when:
+  //   1. NEXT_PUBLIC_USE_REAL_LLM is true (build-time switch),
+  //   2. its provider id is on NEXT_PUBLIC_LLM_PROVIDER_ALLOWLIST.
+  // The actual API keys live ONLY on the server; the browser proxy POSTs to
+  // the matching /api/agent/<role> route which calls selectProviderByName.
+  const allow = realModeOn() ? allowlist() : [];
+
+  const realDealMemoProvider: core.LLMProvider | null = allow.includes("openai")
     ? createOpenAIProxyProvider({
         endpoint: "/api/agent/deal-memo",
         model_id_hint: process.env.NEXT_PUBLIC_OPENAI_MODEL || "openai-remote",
+      })
+    : null;
+
+  const realCounterpartyProvider: core.LLMProvider | null = allow.includes("anthropic")
+    ? createAnthropicProxyProvider({
+        endpoint: "/api/agent/counterparty-reviewer",
+        model_id_hint: process.env.NEXT_PUBLIC_ANTHROPIC_MODEL || "anthropic-remote",
       })
     : null;
 
@@ -83,6 +101,9 @@ export function buildAggregateContext(state: core.ProjectState): core.AggregateC
     getProvider: (role) => {
       if (role === "deal_memo_drafter" && realDealMemoProvider) {
         return realDealMemoProvider;
+      }
+      if (role === "counterparty_reviewer" && realCounterpartyProvider) {
+        return realCounterpartyProvider;
       }
       return mockProvider;
     },

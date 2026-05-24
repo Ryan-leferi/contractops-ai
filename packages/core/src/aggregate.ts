@@ -773,6 +773,7 @@ export function aggRunDeterministicQA(
       ...state,
       project,
       issue_cards: [...state.issue_cards, ...cards],
+      qa_runs: [...state.qa_runs, qa],
     },
     audits: [audit],
   };

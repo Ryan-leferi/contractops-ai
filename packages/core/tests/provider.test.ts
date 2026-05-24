@@ -24,6 +24,7 @@ describe("selectProvider", () => {
       GOOGLE_API_KEY: null,
       LLM_PROVIDER_ALLOWLIST: ["openai"],
       OPENAI_MODEL: null,
+      ANTHROPIC_MODEL: null,
       LLM_LOG_PROMPTS: false,
     });
     expect(p.mode).toBe("mock");
@@ -38,6 +39,7 @@ describe("selectProvider", () => {
         GOOGLE_API_KEY: null,
         LLM_PROVIDER_ALLOWLIST: [],
         OPENAI_MODEL: null,
+      ANTHROPIC_MODEL: null,
       LLM_LOG_PROMPTS: false,
       }),
     ).toThrowError(ProviderRealModeNotConfiguredError);
@@ -52,6 +54,7 @@ describe("selectProvider", () => {
         GOOGLE_API_KEY: null,
         LLM_PROVIDER_ALLOWLIST: ["openai"],
         OPENAI_MODEL: null,
+        ANTHROPIC_MODEL: null,
         LLM_LOG_PROMPTS: false,
       }),
     ).toThrowError(/OPENAI_API_KEY is not set/);
@@ -64,8 +67,9 @@ describe("selectProvider", () => {
         OPENAI_API_KEY: "sk-fake",
         ANTHROPIC_API_KEY: "sk-fake",
         GOOGLE_API_KEY: null,
-        LLM_PROVIDER_ALLOWLIST: ["anthropic"],
+        LLM_PROVIDER_ALLOWLIST: ["google"],
         OPENAI_MODEL: null,
+        ANTHROPIC_MODEL: null,
         LLM_LOG_PROMPTS: false,
       }),
     ).toThrowError(/no supported provider on allowlist/);
@@ -81,6 +85,7 @@ describe("selectProvider", () => {
       GOOGLE_API_KEY: null,
       LLM_PROVIDER_ALLOWLIST: ["openai"],
       OPENAI_MODEL: "gpt-4o-mini",
+      ANTHROPIC_MODEL: null,
       LLM_LOG_PROMPTS: false,
     });
     expect(p.provider_id).toBe("openai");
@@ -96,6 +101,7 @@ describe("selectProvider", () => {
       GOOGLE_API_KEY: null,
       LLM_PROVIDER_ALLOWLIST: ["openai"],
       OPENAI_MODEL: "gpt-4o-mini",
+      ANTHROPIC_MODEL: null,
       LLM_LOG_PROMPTS: false,
     });
     expect(p.mode).toBe("mock");
