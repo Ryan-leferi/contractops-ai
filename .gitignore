@@ -17,6 +17,13 @@ playwright-report/
 **/test-results/
 **/playwright-report/
 
+# DOCX export artifacts (Milestone 3A).
+# Exports are generated in memory and streamed to the user on demand. We
+# never commit a generated .docx — if a future Playbook ever ships a binary
+# template, allowlist it explicitly with a `!path/to/template.docx` line.
+*.docx
+**/*.docx
+
 # Environment / secrets
 .env
 .env.*

@@ -872,6 +872,12 @@ export interface AggCreateExportInput {
   export_type: ExportType;
   content: string;
   created_by: Actor;
+  /**
+   * Optional metadata captured into ExportFile + AuditLog (Milestone 3A).
+   * The DOCX exports page passes these from the rendered file so the audit
+   * trail records exactly which binary was downloaded.
+   */
+  file_name?: string;
 }
 
 export function aggCreateExport(
@@ -888,6 +894,9 @@ export function aggCreateExport(
     content: input.content,
     created_by: input.created_by,
     env,
+    file_name: input.file_name,
+    source_pack_id: final.source_pack_id,
+    playbook_id: final.playbook_id,
   });
   return {
     state: {

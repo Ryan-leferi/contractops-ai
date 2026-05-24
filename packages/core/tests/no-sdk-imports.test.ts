@@ -19,6 +19,10 @@ const WEB_SRC = resolve(__dirname, "../../web");
  *     `packages/core/src/providers/openai-provider.ts` (Milestone 2C).
  *   - `@anthropic-ai/sdk` may be imported ONLY from
  *     `packages/core/src/providers/anthropic-provider.ts` (Milestone 2E).
+ *   - `docx` may be imported ONLY from files under
+ *     `packages/core/src/export-renderer/` (Milestone 3A). The web package
+ *     reaches it via the `@contractops/core/export-renderer` subpath, and
+ *     ONLY from the server-side API route — never from a client component.
  *   - Google SDKs MUST NOT be imported anywhere yet.
  *   - The web package MUST NOT import any provider SDK directly — real
  *     calls happen server-side in API routes via the core package.
@@ -26,30 +30,49 @@ const WEB_SRC = resolve(__dirname, "../../web");
 interface ScopedImportRule {
   pattern: RegExp;
   name: string;
-  /** Absolute path of the only file where this import is allowed. */
-  allowed_file: string;
+  /** Absolute path(s) of the only file(s) where this import is allowed. */
+  allowed_files: string[];
 }
 
 const SCOPED_IMPORT_RULES: ScopedImportRule[] = [
   {
     pattern: /from\s+["']openai["']/,
     name: "openai",
-    allowed_file: resolve(CORE_SRC, "providers/openai-provider.ts"),
+    allowed_files: [resolve(CORE_SRC, "providers/openai-provider.ts")],
   },
   {
     pattern: /require\s*\(\s*["']openai["']\s*\)/,
     name: "require('openai')",
-    allowed_file: resolve(CORE_SRC, "providers/openai-provider.ts"),
+    allowed_files: [resolve(CORE_SRC, "providers/openai-provider.ts")],
   },
   {
     pattern: /from\s+["']@anthropic-ai\/sdk["']/,
     name: "@anthropic-ai/sdk",
-    allowed_file: resolve(CORE_SRC, "providers/anthropic-provider.ts"),
+    allowed_files: [resolve(CORE_SRC, "providers/anthropic-provider.ts")],
   },
   {
     pattern: /require\s*\(\s*["']@anthropic-ai\/sdk["']\s*\)/,
     name: "require('@anthropic-ai/sdk')",
-    allowed_file: resolve(CORE_SRC, "providers/anthropic-provider.ts"),
+    allowed_files: [resolve(CORE_SRC, "providers/anthropic-provider.ts")],
+  },
+  // `docx` is the Office Open XML generator used by the DOCX export renderer.
+  // It is heavy and Node-only; it must never reach the client bundle. Only
+  // the two builder files inside the renderer module are allowed to import it.
+  {
+    pattern: /from\s+["']docx["']/,
+    name: "docx",
+    allowed_files: [
+      resolve(CORE_SRC, "export-renderer/build-clean.ts"),
+      resolve(CORE_SRC, "export-renderer/build-commentary.ts"),
+    ],
+  },
+  {
+    pattern: /require\s*\(\s*["']docx["']\s*\)/,
+    name: "require('docx')",
+    allowed_files: [
+      resolve(CORE_SRC, "export-renderer/build-clean.ts"),
+      resolve(CORE_SRC, "export-renderer/build-commentary.ts"),
+    ],
   },
 ];
 
@@ -82,7 +105,7 @@ describe("Real LLM SDK imports are tightly scoped (Milestone 2E)", () => {
       const lines = readFileSync(file, "utf-8").split("\n");
       lines.forEach((line, i) => {
         for (const rule of SCOPED_IMPORT_RULES) {
-          if (rule.pattern.test(line) && resolve(file) !== rule.allowed_file) {
+          if (rule.pattern.test(line) && !rule.allowed_files.includes(resolve(file))) {
             violations.push({
               file: file.replace(CORE_SRC, "packages/core/src"),
               line: i + 1,
@@ -151,6 +174,44 @@ describe("Real LLM SDK imports are tightly scoped (Milestone 2E)", () => {
     if (violations.length > 0) {
       const msg = violations.map((v) => `  ${v.file}:${v.line} [${v.match}] ${v.text}`).join("\n");
       throw new Error(`Web package imports a provider SDK directly:\n${msg}`);
+    }
+    expect(violations).toEqual([]);
+  });
+
+  /**
+   * The `@contractops/core/export-renderer` subpath transitively pulls in
+   * `docx`. Only server-side files (under `packages/web/app/api/`) may
+   * import it — a client component that does so would force the bundler to
+   * include `docx` in the browser chunk, breaking the
+   * `docx: false` webpack alias.
+   *
+   * Allowlist: any file whose path lives under `packages/web/app/api/`.
+   */
+  it("packages/web/* — @contractops/core/export-renderer is server-only (API routes)", () => {
+    const files = walkTsFiles(WEB_SRC);
+    const subpathPattern = /from\s+["']@contractops\/core\/export-renderer["']/;
+    const violations: { file: string; line: number; text: string }[] = [];
+    for (const file of files) {
+      if (file.includes("e2e") || file.includes("node_modules") || file.includes(".next")) continue;
+      // server-side API routes are allowed; everything else is not.
+      const isApiRoute =
+        file.replace(/\\/g, "/").includes("/app/api/");
+      const lines = readFileSync(file, "utf-8").split("\n");
+      lines.forEach((line, i) => {
+        if (subpathPattern.test(line) && !isApiRoute) {
+          violations.push({
+            file: file.replace(WEB_SRC, "packages/web"),
+            line: i + 1,
+            text: line.trim(),
+          });
+        }
+      });
+    }
+    if (violations.length > 0) {
+      const msg = violations.map((v) => `  ${v.file}:${v.line} ${v.text}`).join("\n");
+      throw new Error(
+        `Client-side file imports @contractops/core/export-renderer (must be server-only):\n${msg}`,
+      );
     }
     expect(violations).toEqual([]);
   });

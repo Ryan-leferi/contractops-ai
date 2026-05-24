@@ -163,10 +163,24 @@ test("NDA happy path — create → sources → confirm → playbook → intake 
   await page.click('[data-testid="approve-final-btn"]');
   await expect(page.getByTestId("final-approved-banner")).toBeVisible();
 
-  // 11. Exports — clean + commentary, separated, no commentary in clean
+  // 11. Exports — clean + commentary buttons download real DOCX binaries
+  // (Milestone 3A). The downloads are awaited so Playwright consumes the
+  // events deterministically. After each download the page also stores a
+  // human-readable metadata summary in localStorage so the export-content
+  // testid still has the in-page assertions from earlier milestones.
   await page.goto(`/projects/${projectId}/exports`);
-  await page.click('[data-testid="create-export-clean_docx-btn"]');
-  await page.click('[data-testid="create-export-commentary_docx-btn"]');
+
+  const [cleanDownload] = await Promise.all([
+    page.waitForEvent("download"),
+    page.click('[data-testid="create-export-clean_docx-btn"]'),
+  ]);
+  expect(cleanDownload.suggestedFilename()).toMatch(/_clean\.docx$/);
+
+  const [commentaryDownload] = await Promise.all([
+    page.waitForEvent("download"),
+    page.click('[data-testid="create-export-commentary_docx-btn"]'),
+  ]);
+  expect(commentaryDownload.suggestedFilename()).toMatch(/_commentary_INTERNAL\.docx$/);
 
   const cleanContent = await page.getByTestId("export-content-clean_docx").innerText();
   const commentaryContent = await page.getByTestId("export-content-commentary_docx").innerText();

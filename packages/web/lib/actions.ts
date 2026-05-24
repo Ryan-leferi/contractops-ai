@@ -239,7 +239,7 @@ export function actApproveFinal(state: core.ProjectState): core.AggregateResult 
 
 export function actCreateExport(
   state: core.ProjectState,
-  args: { export_type: S.ExportType; content: string },
+  args: { export_type: S.ExportType; content: string; file_name?: string },
 ): core.AggregateResult {
   return core.aggCreateExport(
     state,

@@ -56,6 +56,11 @@ const FORBIDDEN_PATH_PATTERNS = [
   // .env, .env.local, .env.production, etc. — but NOT .env.example
   // (handled by the explicit allowlist below).
   { name: "environment file (.env / .env.*)", re: /(^|\/)\.env(\.[^/]+)?$/ },
+  // DOCX export artifacts (Milestone 3A). The renderer generates files in
+  // memory and streams them to the user; nothing is meant to be tracked.
+  // If a binary Playbook template is ever needed, add an explicit
+  // allowlist exception here and document the reason in CLAUDE.md §8.
+  { name: "generated DOCX export", re: /\.docx$/i },
 ];
 
 const ENV_ALLOWLIST = new Set(["\\.env.example", ".env.example"]);

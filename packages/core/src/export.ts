@@ -22,6 +22,15 @@ export interface CreateExportPlaceholderInput {
   content: string;
   created_by: Actor;
   env: Env;
+  /**
+   * Optional metadata pinned onto the resulting ExportFile (Milestone 3A).
+   * For DOCX exports the API route supplies the real `file_name` and the
+   * `source_pack_id` / `playbook_id` from ProjectState so the audit record
+   * captures exactly what was rendered.
+   */
+  file_name?: string;
+  source_pack_id?: string;
+  playbook_id?: string | null;
 }
 
 export interface CreateExportPlaceholderResult {
@@ -52,6 +61,11 @@ export function createExportPlaceholder(
     content: input.content,
     created_at: now,
     created_by: input.created_by.id,
+    ...(input.file_name !== undefined ? { file_name: input.file_name } : {}),
+    ...(input.source_pack_id !== undefined
+      ? { source_pack_id: input.source_pack_id }
+      : {}),
+    ...(input.playbook_id !== undefined ? { playbook_id: input.playbook_id } : {}),
   };
   const audit = createAuditLog({
     project_id: input.version.project_id,
@@ -61,6 +75,11 @@ export function createExportPlaceholder(
     payload: {
       export_type: input.export_type,
       contract_version_id: input.version.id,
+      ...(input.file_name !== undefined ? { file_name: input.file_name } : {}),
+      ...(input.source_pack_id !== undefined
+        ? { source_pack_id: input.source_pack_id }
+        : {}),
+      ...(input.playbook_id !== undefined ? { playbook_id: input.playbook_id } : {}),
     },
     env: input.env,
   });
