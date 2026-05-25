@@ -223,3 +223,53 @@ Test infrastructure:
 - Postgres fixes **durability and concurrency**. It does NOT fix identity, RBAC, encryption-at-rest beyond what the DB provides, or row-level access control. ADR-013 (demo actor) and ADR-014 (lawyer-only guards) remain in place; production deployment still requires real authentication and project-level authorization on top — Postgres is necessary but not sufficient.
 - Confidential source documents remain forbidden in any adapter (PLATFORM_BRIEF.md §10, §12 rule 6). The Postgres adapter is no exception. Generated `.docx` and `_cover_email.md` binaries are still never stored — `ExportFile.content` is a text summary inside the JSONB ProjectState column.
 - TLS is opt-in via `POSTGRES_SSL=true` (passes `rejectUnauthorized: false`, suitable for managed providers like Supabase / Neon / RDS that present chains the local trust store doesn't carry). Hardened deployments should swap `createPgPool` for a factory that passes a real CA bundle.
+
+---
+
+## ADR-016 — Server-side auth boundary; operation routes must NOT trust `actor_id` in the request body (Milestone 3I)
+
+**Source:** Milestone 3I scope; ADR-013 (demo actor registry); ADR-014 (lawyer-only UI guards).
+
+**Decision:** Introduce a single server-side seam, `AuthSessionResolver` in `packages/web/lib/auth/`, that every API route uses to answer "who is making this request?". The only Milestone 3I implementation is `DemoSessionAuthProvider`, which reads the actor id from a server-set `contractops_demo_actor` cookie and validates it against the existing `DEMO_ACTOR_REGISTRY`. Workflow operation routes (`POST /api/projects`, `POST /api/projects/[id]/operations`) **REJECT** any request body that carries `actor_id` — the field is no longer a transport concern, it is server-resolved.
+
+Cookie shape:
+
+```
+contractops_demo_actor=<actor_id>; Path=/; SameSite=Lax; HttpOnly; Max-Age=2592000
+```
+
+Set + cleared via three new routes — `GET /api/auth/session`, `POST /api/auth/demo/actor`, `DELETE /api/auth/demo/actor` — that are the ONLY way to change the active actor. The browser no longer writes the cookie directly (`httpOnly: true`) and no longer reads or persists actor state in `localStorage`.
+
+The boundary itself is the interface in `lib/auth/types.ts`:
+
+```ts
+interface AuthSession { actor: AuthActor; source: "demo_cookie" | "demo_default" }
+interface AuthSessionResolver {
+  resolveSession(request: Request): Promise<AuthSession | null>;
+  resolveActor(request: Request):   Promise<AuthSession>;
+}
+```
+
+with two helper functions every route calls instead of touching cookies or the registry directly: `resolveActorFromRequest(request)` and `requireAuthenticatedActor(request)`. In demo mode both fall back to `lawyer_kim` when no cookie is present; an INVALID cookie always throws `InvalidSessionError` (never silently downgrades). The distinction between the two helpers documents intent for the future real-auth swap, where `requireAuthenticatedActor` will throw `UnauthenticatedError` instead of defaulting.
+
+Test infrastructure:
+
+- `tests/auth-demo-session.test.ts` — pure-function tests of `DemoSessionAuthProvider`, `parseCookieHeader`, and the resolver façade. Covers default fallback, valid cookie, invalid cookie (throws), and the unknown-vs-missing distinction.
+- `tests/auth-routes.test.ts` — imports the App Router route handlers directly and invokes them with constructed `Request` objects (no Next dev server). Asserts `GET /api/auth/session` defaults / cookie / invalid; `POST + DELETE /api/auth/demo/actor`; `POST /api/projects` and `POST /api/projects/[id]/operations` REJECT `body.actor_id` with `OPERATION_ACTOR_ID_FORBIDDEN` (400); a `business_choi` cookie cannot approve Deal Memo (422); a `lawyer_park` cookie succeeds where Choi failed.
+- `packages/web/e2e/multi-actor.spec.ts` — three browser contexts each seeded with a different actor cookie via `setDemoActorCookie(context, id)`. Asserts the audit trail shows the correct actor per request, that `business_choi`'s `decide_issue` is rejected with 422, that a forced `body.actor_id="lawyer_kim"` from the Choi context is rejected with 400, and that an unknown actor cookie returns 401.
+- `packages/web/e2e/lawyer-ui-guards.spec.ts` — switches the dropdown (which now calls `POST /api/auth/demo/actor`) and asserts the server still rejects forced approvals from the Choi cookie. Also asserts the 400 on attempted `body.actor_id` impersonation.
+
+Implementation note — Next.js App Router compiles each route handler as its own server-side module, which can produce a SECOND copy of `InvalidSessionError` whose `instanceof` check on objects thrown from `@/lib/auth` returns false in dev. Each route uses a small `isInvalidSession(err)` predicate that matches on `err.code === "INVALID_SESSION"` instead of `instanceof`. The string code lives on the prototype and survives module duplication, while still being unique enough to never accidentally match an unrelated error.
+
+**Consequence:**
+
+- **`body.actor_id` impersonation is impossible.** A logged-in `business_choi` cannot pretend to be `lawyer_kim` by hand-editing one field in a POST body — the rejection fires BEFORE the operation runs. This closes the most obvious attack on the 3F-era demo, where a malicious browser could trivially elevate itself.
+- **Cookie identity is the single source of "who".** AuditLog + IssueDecisionHistory entries always reflect the cookie-resolved actor, not anything the client sent. The append-only contracts established in 3C / 3E / 3H are unchanged; they just stamp a more trustworthy actor.
+- **Multi-context multi-actor demo works naturally.** Different browser contexts get different cookie jars, so three Playwright contexts each seeded with a different actor cookie can drive the workflow without any client-side wiring. The `multi-actor` spec proves this end-to-end.
+- **Persistence is untouched.** Memory / file / Postgres adapters all keep working. The auth boundary lives strictly above the persistence boundary; both follow the same "single interface, swap implementations later" pattern.
+- **NOT production authentication.** No password, no signed token, no rate limit, no audit of the auth events themselves. Anyone who can reach the Next.js process can become any registry actor via one POST. Production deployment **still requires** a real identity provider, a user table, a project-membership table, and per-project RBAC. The migration path is:
+  1. Replace `DemoSessionAuthProvider` with a real `AuthSessionResolver` backed by a signed JWT or DB-backed session table.
+  2. Add user + project-membership tables; tighten `requireAuthenticatedActor` to throw on missing sessions.
+  3. Layer per-project lawyer assignments on top of the existing `role === "human_lawyer"` check.
+  4. Keep `POST /api/auth/demo/actor` only behind an explicit `DEMO_AUTH=true` flag for local dev.
+- **No new dependencies.** Cookie parsing is a 10-line helper; cookie setting is `NextResponse.cookies.set`. No `cookie`, `iron-session`, `next-auth`, or signing library was added. When the future real-auth milestone arrives it will pull in exactly the deps it needs — not before.

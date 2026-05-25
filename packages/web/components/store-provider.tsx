@@ -16,15 +16,12 @@ import type { Operation } from "@/lib/operations";
 import {
   DEFAULT_DEMO_ACTOR_ID,
   DEMO_ACTOR_REGISTRY,
-  isKnownDemoActorId,
   type DemoActorId,
 } from "@/lib/demo-actors";
 import type { Actor } from "@contractops/schemas";
 
-const ACTOR_STORAGE_KEY = "contractops:demo-actor";
-
 /**
- * API-backed application store (Milestone 3D).
+ * API-backed application store (Milestones 3D + 3I).
  *
  * Replaces the old browser-localStorage-only StoreProvider with one that
  * fetches ProjectState from the server's in-memory store via:
@@ -40,10 +37,16 @@ const ACTOR_STORAGE_KEY = "contractops:demo-actor";
  * context can `refreshProject(id)` (or simply navigate to the page) to see
  * changes made elsewhere.
  *
- * localStorage is no longer used at all — the previous v4 key is left
- * orphaned in users' browsers; that's harmless. The server in-memory
- * store resets on server restart and is documented as non-production in
- * README. Future milestone will swap in PostgreSQL or another durable DB.
+ * Actor / session (Milestone 3I): the selected demo actor lives in a
+ * server-side cookie (`contractops_demo_actor`). The client never sends
+ * `actor_id` in the operation body — the server resolves the actor from
+ * the cookie via the auth boundary and stamps it on the audit + history
+ * entries. The header dropdown calls `POST /api/auth/demo/actor` to
+ * switch; the rest of the UI reads `session.actor` from this provider.
+ *
+ * localStorage is no longer used for project data OR actor selection.
+ * Different browser contexts get independent cookie jars naturally, so
+ * a multi-actor demo with three browsers requires no special setup.
  */
 
 interface ProjectSummary {
@@ -51,6 +54,11 @@ interface ProjectSummary {
   name: string;
   status: string;
   created_at: string;
+}
+
+interface SessionState {
+  actor: Actor;
+  source: "demo_cookie" | "demo_default";
 }
 
 interface StoreContextValue {
@@ -66,15 +74,24 @@ interface StoreContextValue {
   /** Re-fetch the list of projects (and lazily populate any missing). */
   refreshProjects: () => Promise<void>;
   /**
-   * Currently selected demo actor (Milestone 3F). Every API call sends
-   * `actor_id` so the server attributes the action correctly. The
-   * server validates the id against the demo registry — unknown ids
-   * are rejected with HTTP 400.
+   * Currently authenticated demo actor (Milestone 3I). `null` while
+   * the initial `GET /api/auth/session` is still in flight. Once
+   * hydrated, every value comes from the server — the client never
+   * picks an actor in isolation.
    *
-   * NOT AUTHENTICATION. This is a name-picker for the demo only.
+   * NOT AUTHENTICATION. A name-picker for the demo only; documented
+   * in `lib/auth/types.ts` and the README "Auth boundary" section.
    */
-  actorId: DemoActorId;
-  setActorId: (id: DemoActorId) => void;
+  session: SessionState | null;
+  /** Convenience: id of the current actor, or null pre-hydration. */
+  actorId: DemoActorId | null;
+  /**
+   * Switch the demo actor. Calls `POST /api/auth/demo/actor` which
+   * validates the id against the registry and sets the session
+   * cookie. The local `session` state then mirrors what the server
+   * returned. Throws on a 4xx response.
+   */
+  setActorId: (id: DemoActorId) => Promise<void>;
 }
 
 const StoreContext = createContext<StoreContextValue | null>(null);
@@ -100,12 +117,12 @@ async function apiGet(
 
 async function apiCreate(
   name: string,
-  actorId: DemoActorId,
 ): Promise<{ state: core.ProjectState; audits: S.AuditLog[] }> {
   const res = await fetch("/api/projects", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ name, actor_id: actorId }),
+    // Milestone 3I — no actor_id in body. Server reads the cookie.
+    body: JSON.stringify({ name }),
   });
   if (!res.ok) {
     let detail = `HTTP ${res.status}`;
@@ -123,12 +140,12 @@ async function apiCreate(
 async function apiOperation(
   projectId: string,
   op: Operation,
-  actorId: DemoActorId,
 ): Promise<{ state: core.ProjectState; audits: S.AuditLog[] }> {
   const res = await fetch(`/api/projects/${projectId}/operations`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ ...op, actor_id: actorId }),
+    // Milestone 3I — no actor_id in body. Server reads the cookie.
+    body: JSON.stringify(op),
   });
   if (!res.ok) {
     let detail = `HTTP ${res.status}`;
@@ -157,6 +174,37 @@ async function apiReset(): Promise<void> {
   }
 }
 
+async function apiGetSession(): Promise<SessionState> {
+  const res = await fetch("/api/auth/session", {
+    // Defensive: keep the response uncached so a switch in another
+    // tab is reflected on the next mount.
+    cache: "no-store",
+  });
+  if (!res.ok) {
+    throw new Error(`GET /api/auth/session failed: HTTP ${res.status}`);
+  }
+  return (await res.json()) as SessionState;
+}
+
+async function apiSetActor(actorId: DemoActorId): Promise<SessionState> {
+  const res = await fetch("/api/auth/demo/actor", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ actor_id: actorId }),
+  });
+  if (!res.ok) {
+    let detail = `HTTP ${res.status}`;
+    try {
+      const body = (await res.json()) as { error?: string };
+      if (body.error) detail = body.error;
+    } catch {
+      // ignore
+    }
+    throw new Error(`POST /api/auth/demo/actor failed: ${detail}`);
+  }
+  return (await res.json()) as SessionState;
+}
+
 // ───────────────────────────────────────────────────────────────────────
 // Provider
 // ───────────────────────────────────────────────────────────────────────
@@ -167,27 +215,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   storeRef.current = store;
   const [hydrated, setHydrated] = useState(false);
 
-  // Selected demo actor (Milestone 3F). Hydrates from localStorage on
-  // mount; falls back to the registry default. NEVER trusted by the
-  // server — every request re-validates the id against the registry.
-  const [actorId, setActorIdState] = useState<DemoActorId>(DEFAULT_DEMO_ACTOR_ID);
-  const actorIdRef = useRef<DemoActorId>(actorId);
-  actorIdRef.current = actorId;
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    const stored = window.localStorage.getItem(ACTOR_STORAGE_KEY);
-    if (stored && isKnownDemoActorId(stored)) {
-      setActorIdState(stored);
-      actorIdRef.current = stored;
-    }
-  }, []);
-  const setActorId = useCallback((id: DemoActorId) => {
-    setActorIdState(id);
-    actorIdRef.current = id;
-    if (typeof window !== "undefined") {
-      window.localStorage.setItem(ACTOR_STORAGE_KEY, id);
-    }
-  }, []);
+  // Session (Milestone 3I). `null` until the first GET /api/auth/session
+  // lands; we render before that so the page shell paints, but
+  // `useCurrentActor` returns null in that window and lawyer-only
+  // affordances stay disabled.
+  const [session, setSession] = useState<SessionState | null>(null);
   // Track the number of in-flight API operations and mirror it onto a DOM
   // attribute on <html>. Playwright tests use this to wait deterministically
   // for asynchronous mutations to land — `data-ops-in-flight="0"` means the
@@ -269,12 +301,21 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     [],
   );
 
-  // Initial hydration on mount.
+  // Initial hydration on mount — fetch projects AND the session.
+  // Both bump in-flight so `waitForStoreIdle` in Playwright covers
+  // both hand-shakes. Failures are logged but don't crash; the empty
+  // shell stays visible and pages render their own error states.
   useEffect(() => {
+    bumpInFlight(1);
+    apiGetSession()
+      .then((s) => setSession(s))
+      .catch((err) => {
+        // eslint-disable-next-line no-console
+        console.error("StoreProvider session fetch failed:", err);
+      })
+      .finally(() => bumpInFlight(-1));
     refreshProjects()
       .catch((err) => {
-        // Surface in dev console but don't crash. Empty store stays
-        // visible; the UI shows "no projects" or per-page errors.
         // eslint-disable-next-line no-console
         console.error("StoreProvider initial fetch failed:", err);
       })
@@ -285,11 +326,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     async (projectId, op) => {
       bumpInFlight(1);
       try {
-        const { state, audits } = await apiOperation(
-          projectId,
-          op,
-          actorIdRef.current,
-        );
+        const { state, audits } = await apiOperation(projectId, op);
         commit(upsertProject(state, audits));
         // Server returns ONLY the audits emitted by this operation. We
         // already wiped this project's audits and re-appended them — see
@@ -307,7 +344,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     async (name) => {
       bumpInFlight(1);
       try {
-        const { state, audits } = await apiCreate(name, actorIdRef.current);
+        const { state, audits } = await apiCreate(name);
         commit(upsertProject(state, audits));
         return state.project.id;
       } finally {
@@ -328,6 +365,19 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     }
   }, [refreshProjects]);
 
+  const setActorId = useCallback<StoreContextValue["setActorId"]>(
+    async (id) => {
+      bumpInFlight(1);
+      try {
+        const next = await apiSetActor(id);
+        setSession(next);
+      } finally {
+        bumpInFlight(-1);
+      }
+    },
+    [],
+  );
+
   return (
     <StoreContext.Provider
       value={{
@@ -338,7 +388,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         resetStore,
         refreshProject,
         refreshProjects,
-        actorId,
+        session,
+        actorId: (session?.actor.id as DemoActorId | undefined) ?? null,
         setActorId,
       }}
     >
@@ -360,16 +411,27 @@ export function useProjectAudits(projectId: string): S.AuditLog[] {
 }
 
 /**
- * Resolve the currently selected demo actor id to the full Actor object
- * from the registry (Milestone 3G). Pages use this to make role-aware
- * decisions in the UI — e.g. disabling lawyer-only buttons when the
- * selected actor is not a `human_lawyer`. The server still re-checks
- * the role on every operation; this hook only powers the UX guard.
+ * Resolve the currently authenticated demo actor (Milestone 3I).
+ * Returns `null` during the brief window before the initial
+ * `GET /api/auth/session` lands — pages MUST treat that as "no
+ * actor yet" and keep lawyer-only affordances disabled.
+ *
+ * The server still re-checks the role on every operation; this
+ * hook only powers the UX guard. (See `canActAsLawyer` in
+ * `lib/demo-actors.ts` for the predicate.)
  */
-export function useCurrentActor(): Actor {
-  const { actorId } = useStore();
-  return DEMO_ACTOR_REGISTRY[actorId];
+export function useCurrentActor(): Actor | null {
+  const { session } = useStore();
+  return session?.actor ?? null;
 }
+
+/**
+ * The actor object the StoreProvider falls back to before the
+ * session lands. Exported so a future SSR / loading state can
+ * render the same display name the server would have picked.
+ */
+export const PRE_HYDRATION_FALLBACK_ACTOR: Actor =
+  DEMO_ACTOR_REGISTRY[DEFAULT_DEMO_ACTOR_ID];
 
 // ───────────────────────────────────────────────────────────────────────
 // Internal helpers

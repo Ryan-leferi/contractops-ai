@@ -39,10 +39,16 @@ async function selectActor(
   page: import("@playwright/test").Page,
   actorId: string,
 ) {
+  // Settle any in-flight ops (including the initial GET /api/auth/session
+  // on first mount) BEFORE switching. After 3I, `setActorId` POSTs to
+  // /api/auth/demo/actor — if it raced an unfinished initial session
+  // GET, the GET's late `setSession` could clobber our POST's result.
+  await waitForStoreIdle(page);
   await page
     .getByTestId("actor-selector-input")
     .selectOption(actorId);
-  // Give React a tick to re-render guarded controls before the next assertion.
+  // Wait for the POST /api/auth/demo/actor + setSession to land before
+  // the next assertion / click reads `useCurrentActor()`.
   await waitForStoreIdle(page);
 }
 
@@ -172,15 +178,33 @@ test("Issue decision buttons disable for business_choi, re-enable for lawyer_par
   await expect(page.getByTestId("lawyer-required-note")).toBeVisible();
 
   // 8. Server is still the authoritative check ────────────────
-  const blockedResp = await request.post(
+  // Milestone 3I: the request body must NOT carry actor_id. The
+  // server resolves the actor from the session cookie. Use the
+  // page's own request context so the business_choi cookie set by
+  // the dropdown above is sent automatically.
+  const blockedResp = await page.context().request.post(
     `/api/projects/${projectId}/operations`,
     {
-      data: { name: "approve_final", args: {}, actor_id: "business_choi" },
+      data: { name: "approve_final", args: {} },
     },
   );
   expect(blockedResp.status()).toBe(422);
   const blockedBody = (await blockedResp.json()) as { error: string };
   expect(blockedBody.error.toLowerCase()).toContain("lawyer");
+
+  // 8b. body.actor_id is rejected outright — even attempting to
+  // pose as a lawyer while logged in as business_choi must fail
+  // with OPERATION_ACTOR_ID_FORBIDDEN before the operation runs.
+  const impersonate = await page.context().request.post(
+    `/api/projects/${projectId}/operations`,
+    {
+      data: { name: "approve_final", args: {}, actor_id: "lawyer_kim" },
+    },
+  );
+  expect(impersonate.status()).toBe(400);
+  const impBody = (await impersonate.json()) as { code: string };
+  expect(impBody.code).toBe("OPERATION_ACTOR_ID_FORBIDDEN");
+  void request;
 
   // 9. Park completes the workflow + DOCX export separation holds ─
   await selectActor(page, "lawyer_park");
