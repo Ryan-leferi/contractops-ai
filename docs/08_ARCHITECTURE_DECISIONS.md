@@ -273,3 +273,56 @@ Implementation note — Next.js App Router compiles each route handler as its ow
   3. Layer per-project lawyer assignments on top of the existing `role === "human_lawyer"` check.
   4. Keep `POST /api/auth/demo/actor` only behind an explicit `DEMO_AUTH=true` flag for local dev.
 - **No new dependencies.** Cookie parsing is a 10-line helper; cookie setting is `NextResponse.cookies.set`. No `cookie`, `iron-session`, `next-auth`, or signing library was added. When the future real-auth milestone arrives it will pull in exactly the deps it needs — not before.
+
+---
+
+## ADR-017 — Signed-cookie auth provider + minimal user store; demo mode stays the default (Milestone 3J)
+
+**Source:** Milestone 3J scope; ADR-016 (auth boundary).
+
+**Decision:** Add a SECOND `AuthSessionResolver` implementation — `SignedCookieAuthProvider` — backed by an HMAC-SHA256 signed session cookie and a minimal user store with PBKDF2-SHA256 password hashes. Mode selection is environment-driven (`AUTH_MODE`):
+
+- `AUTH_MODE=demo` (default) keeps the 3I `DemoSessionAuthProvider` exactly as-is. Every existing test + the demo Playwright suite + the CI `npm run verify` pipeline are unaffected.
+- `AUTH_MODE=signed_cookie` switches the factory in `session-resolver.ts` to the new provider. Routes still call `resolveActorFromRequest(request)` unchanged — the boundary added in ADR-016 absorbs the swap.
+
+Configuration is centralized in `lib/auth/config.ts`. The parser refuses dangerous combinations at boot:
+
+- `AUTH_MODE=signed_cookie` with no `AUTH_SESSION_SECRET` → `AuthSessionSecretMissingError`.
+- `AUTH_MODE=signed_cookie` with `AUTH_SESSION_SECRET` < 32 chars → `AuthSessionSecretWeakError`.
+- `NODE_ENV=production` with `AUTH_MODE=demo` → `DemoAuthInProductionError` unless `ALLOW_DEMO_AUTH_IN_PRODUCTION=true` (dev override).
+- Unknown `AUTH_MODE` value → `UnknownAuthModeError`.
+
+In `signed_cookie` mode, `DEMO_AUTH_ENABLED` defaults to `false` and `POST /api/auth/demo/actor` returns 403 `DEMO_AUTH_DISABLED`. The signed provider has no use for the demo cookie; silently accepting demo-actor POSTs would create a parallel identity channel that bypasses the signed session.
+
+User store: `MemoryUserStore` implementing the `UserStore` interface (`getUserById`, `getUserByEmail`, `createUser`, `listUsers`, `setDisabled`, `clear`). Lives in process memory; restart wipes it. A future milestone replaces it with a Postgres-backed store, but the interface is the seam. Users are intentionally separate from the project `PersistenceAdapter` (3E/3H) so the two layers can evolve independently — for early staging it's plausible to want real auth + still-in-memory projects.
+
+Password hashing: PBKDF2-HMAC-SHA256 from Node's stdlib `crypto` — no native binding to compile (rules out bcrypt / argon2 npm packages). 120k iterations, 16-byte salt, 32-byte derived key, encoded as `pbkdf2-sha256-v1$<iter>$<salt-b64url>$<key-b64url>`. The version prefix lets a future hardening milestone migrate to bcrypt / argon2id without invalidating existing hashes (rehash-on-next-login). Tests assert `password_hash !== plaintext` and exercise wrong-password / disabled-user / malformed-hash paths.
+
+Signed session: payload `{ user_id, issued_at, expires_at }` (unix seconds) base64url-encoded, followed by `HMAC-SHA256(secret, payload)` — a small, audit-friendly subset of JWT. One fixed algorithm (no `alg: "none"` confusion), no unused claims. Verification uses `timingSafeEqual` for the signature comparison. Tests cover round-trip, tampered payload / signature rejection (`INVALID_SIGNATURE`), expired tokens (`EXPIRED`), and malformed input (`INVALID_TOKEN_SHAPE`).
+
+Auth routes:
+
+- `POST /api/auth/login { email, password }` — signed_cookie mode only. Returns 200 + Set-Cookie on success; 401 `INVALID_CREDENTIALS` (generic, no email-enumeration leak) on missing user / disabled user / wrong password; 400 `AUTH_MODE_MISMATCH` in demo mode.
+- `POST /api/auth/logout` — clears both the signed cookie AND the demo cookie defensively, in both modes.
+- `GET /api/auth/session` — extended to return `{ auth_mode, demo_enabled, authenticated, actor, source }` in both modes. The client uses `auth_mode` + `demo_enabled` to decide whether to render the demo dropdown vs. the login form.
+- `POST /api/auth/dev/seed` — DEV-only, gated by `E2E_SIGNED_AUTH=true`. Seeds three sanitized users (`lawyer.kim@example.test`, `lawyer.park@example.test`, `biz.choi@example.test`) with the caller-supplied password. 403 otherwise.
+
+Test infrastructure:
+
+- `tests/auth-config.test.ts` (18 cases) — env parsing, mode defaults, secret-missing/weak/production guards.
+- `tests/auth-password.test.ts` (6 cases) — hash ≠ plaintext, round-trip, wrong-password rejected, random salt, malformed hashes don't throw.
+- `tests/auth-signed-token.test.ts` (8 cases) — sign/verify round-trip, tampered payload + signature + secret rejection, expiry boundary.
+- `tests/auth-user-store.test.ts` (16 cases) — CRUD, duplicate-id + duplicate-email rejection, disabled flag, ordering, `seedDemoUsers` idempotency, `SignedCookieAuthProvider` end-to-end (valid cookie, tampered, expired, missing user, disabled user).
+- `tests/auth-routes-signed.test.ts` (16 cases) — `/api/auth/login` (valid, unknown email, wrong password, disabled, malformed, wrong mode), `/api/auth/logout`, `/api/auth/session` in signed mode (anonymous, valid cookie, expired), demo route hardening, operations route in signed mode (body.actor_id rejected, no-cookie 401, role guard fires, lawyer succeeds + Audit records signed-in actor).
+- `e2e/signed-auth.spec.ts` — gated Playwright; multi-context login/logout/role-rejection/impersonation-rejection/export-separation flow. CI never sets the gate.
+
+**Consequence:**
+
+- **The auth boundary (ADR-016) was sufficient as-designed.** Adding `SignedCookieAuthProvider` required ZERO changes to `core` workflow code, project routes, the persistence layer, or any page component. Only `session-resolver.ts` picked up a one-line `mode === "signed_cookie"` branch in the factory.
+- **`npm run verify` is unchanged.** `AUTH_MODE` defaults to `demo`, so the standard CI pipeline keeps using the demo provider and every existing test passes. Switching to signed-cookie is always the operator's deliberate choice.
+- **Demo-mode behavior is byte-identical to 3I.** Demo cookies, the actor dropdown, the multi-actor E2E — nothing about the demo flow changed. The new mode is purely additive.
+- **Impersonation is still impossible.** Both modes share the 3I body.actor_id rejection. In signed_cookie mode, the impossibility extends to "no cookie at all" (401 instead of demo default).
+- **Signed-cookie mode is NOT production authentication YET.** Still missing: OAuth / SSO integration, per-project RBAC (the role check is the same `actor.role === "human_lawyer"`), rate limiting on login, account lockout, MFA, password reset, email verification, audit of auth events themselves, and key-id support for secret rotation. ADR-017 is a **seam**, not a destination. Production deployment **still requires** all of the above.
+- **Migration path is explicit.** 3K = OAuth / SSO provider (third `AuthSessionResolver`). 3L = per-project assignment + production RBAC. 3M = auth-event audit. 3N = hardening (rate limiting, MFA, password reset, CSRF tokens on logout). Each step adds capability without disturbing the already-shipped layers.
+- **No new npm dependencies.** All crypto comes from Node's stdlib (`crypto.pbkdf2`, `crypto.createHmac`, `crypto.randomBytes`, `crypto.timingSafeEqual`). No `bcrypt`, `argon2`, `iron-session`, `jose`, `jsonwebtoken`, or `next-auth` was added. When a future milestone needs interoperability with another service or a hardened deployment, it will pull in exactly the deps it needs — not before.
+- **No real users or real passwords in the repo.** The seeded users use the IANA-reserved `example.test` TLD (RFC 6761 §6.4) so the addresses can never reach a real mailbox. The seeding password is the obvious literal `"demo-password"`. `repo:hygiene` continues to refuse any committed secret pattern.

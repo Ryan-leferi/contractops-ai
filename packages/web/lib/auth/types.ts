@@ -60,14 +60,21 @@ export type AuthActor = Actor;
 export interface AuthSession {
   readonly actor: AuthActor;
   /**
-   * Where the actor came from. `demo_cookie` means the request
-   * carried a valid `contractops_demo_actor` cookie; `demo_default`
-   * means no cookie was present and the demo provider fell back to
-   * `DEFAULT_DEMO_ACTOR_ID`. A future real provider would add new
-   * variants (`oauth_jwt`, `magic_link`, …) without changing this
-   * field's purpose.
+   * Where the actor came from.
+   *
+   *   demo_cookie    — 3I demo provider, valid `contractops_demo_actor`
+   *                     cookie.
+   *   demo_default   — 3I demo provider, no cookie present, fell back
+   *                     to `DEFAULT_DEMO_ACTOR_ID`.
+   *   signed_cookie  — 3J signed-cookie provider, HMAC-verified
+   *                     session token resolved against the user store.
+   *
+   * A future OAuth / SSO milestone adds new variants (`oauth_jwt`,
+   * `magic_link`, …) without changing this field's purpose: the
+   * server tells the client which authentication path produced the
+   * actor so the UI can render the right session affordances.
    */
-  readonly source: "demo_cookie" | "demo_default";
+  readonly source: "demo_cookie" | "demo_default" | "signed_cookie";
 }
 
 /**

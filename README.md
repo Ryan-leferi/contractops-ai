@@ -189,7 +189,7 @@ const isLawyer = canActAsLawyer(useCurrentActor());
 
 Production deployment **still requires real authentication and authorization** — see ADR-013 / ADR-014 and the "Future path to real auth" subsection below.
 
-## Demo actor context (Milestones 3F + 3I)
+## Demo actor context (Milestones 3F + 3I + 3J)
 
 The header now carries an **"Acting as"** dropdown with three predefined demo actors:
 
@@ -200,6 +200,17 @@ The header now carries an **"Acting as"** dropdown with three predefined demo ac
 | `business_choi` | `user` | sources, intake, exports — but NOT approvals or Issue Card decisions (core throws `notHumanLawyer()`) |
 
 > **⚠ NOT AUTHENTICATION.** This is a demo name-picker, not an identity provider. There is no password, no signed token, no OAuth, no SSO, no real RBAC. The server reads the picked id from the `contractops_demo_actor` cookie and resolves it against the hardcoded `lib/demo-actors.ts` registry — that is the entirety of "authorization". A future milestone replaces this with a real identity provider (see ADR-016). **Until then, do not deploy this app to a public URL.**
+
+### Auth modes (Milestones 3I + 3J)
+
+`AUTH_MODE` selects between two `AuthSessionResolver` implementations behind the boundary the routes already use:
+
+| `AUTH_MODE` | Provider | Default? | Used for |
+|---|---|---|---|
+| `demo` (or unset) | `DemoSessionAuthProvider` — cookie-based, hardcoded `DEMO_ACTOR_REGISTRY`, no password / no token | ✅ default | CI, mock-mode `npm run dev`, every Playwright spec that doesn't opt in to signed-cookie mode |
+| `signed_cookie` | `SignedCookieAuthProvider` — HMAC-SHA256 signed session cookie, user store with PBKDF2 password hashes | opt-in | Local dev / staging that wants real login + logout. **Still NOT production-grade** — no OAuth, no per-project RBAC, no rate limiting. See ADR-017. |
+
+`AUTH_MODE=demo` in `NODE_ENV=production` is refused at boot unless `ALLOW_DEMO_AUTH_IN_PRODUCTION=true` is explicitly set. `AUTH_MODE=signed_cookie` requires `AUTH_SESSION_SECRET` (≥ 32 chars; generate with `openssl rand -base64 48`); missing or weak secrets throw at boot.
 
 ### Auth boundary (Milestone 3I)
 
@@ -219,7 +230,7 @@ browser  ──►  POST /api/projects/[id]/operations  { name, args }    ← NO
               applyOperationToStore(id, op, actor) → core.agg*(state, …, actor)
 ```
 
-The boundary is `AuthSessionResolver` in `lib/auth/types.ts`; the only 3I implementation is `DemoSessionAuthProvider`. A future real-auth milestone drops in a new provider (OAuth / JWT / DB-backed sessions) without touching any operation route or any `core.agg*` function.
+The boundary is `AuthSessionResolver` in `lib/auth/types.ts`. 3I shipped `DemoSessionAuthProvider`; 3J adds `SignedCookieAuthProvider` (HMAC-signed session cookie + user store). The factory in `session-resolver.ts` picks the implementation from `AUTH_MODE`; routes call `resolveActorFromRequest` unchanged. A future OAuth / SSO milestone drops in a third provider the same way — no route or `core.agg*` touch.
 
 ### Where it flows
 
@@ -236,9 +247,12 @@ The boundary is `AuthSessionResolver` in `lib/auth/types.ts`; the only 3I implem
 
 | Route | Method | Purpose |
 |---|---|---|
-| `/api/auth/session` | `GET` | Return `{ actor, source }` for the current request. Used by the header to display the current actor. |
-| `/api/auth/demo/actor` | `POST` | Body `{ actor_id }`. Validate against registry, set the cookie. Returns `{ actor, source: "demo_cookie" }`. |
-| `/api/auth/demo/actor` | `DELETE` | Clear the cookie. Returns `{ actor, source: "demo_default" }`. |
+| `/api/auth/session` | `GET` | Return `{ auth_mode, demo_enabled, authenticated, actor, source }`. Bad cookie → 401 + Set-Cookie clear. |
+| `/api/auth/demo/actor` | `POST` | Demo mode (or `DEMO_AUTH_ENABLED=true` override) — set the picker cookie. Returns 403 `DEMO_AUTH_DISABLED` in signed_cookie mode otherwise. |
+| `/api/auth/demo/actor` | `DELETE` | Demo mode — clear the picker cookie. 403 otherwise. |
+| `/api/auth/login` | `POST` | **Signed-cookie mode only.** Body `{ email, password }` → 200 + Set-Cookie signed session, or 401 `INVALID_CREDENTIALS` (generic — no email-enumeration leak). Refused in demo mode with 400 `AUTH_MODE_MISMATCH`. |
+| `/api/auth/logout` | `POST` | Clears both the signed cookie AND the demo cookie defensively. |
+| `/api/auth/dev/seed` | `POST` | **Dev-only.** Gated by `E2E_SIGNED_AUTH=true`. Seeds the three sanitized demo users (`example.test` emails) for the gated Playwright spec. 403 in normal operation. |
 
 ### Multi-actor demo
 
@@ -253,16 +267,53 @@ npm run dev -w @contractops/web   # then open the project URL in three browser w
 
 Different windows hold independent cookie jars, so the three demo sessions don't collide. The `multi-actor.spec.ts` Playwright spec exercises exactly this flow and asserts that forcing `body.actor_id="lawyer_kim"` from the business_choi context gets HTTP 400.
 
+### Signed-cookie mode (Milestone 3J)
+
+```bash
+AUTH_MODE=signed_cookie \
+AUTH_SESSION_SECRET=$(openssl rand -base64 48) \
+  npm run dev -w @contractops/web
+```
+
+What changes vs. demo mode:
+
+- The demo actor dropdown route returns 403 `DEMO_AUTH_DISABLED` (unless `DEMO_AUTH_ENABLED=true` is also set).
+- `POST /api/auth/login { email, password }` validates against the user store and issues an HMAC-signed session cookie.
+- `GET /api/auth/session` returns `authenticated: false, actor: null` when no cookie is present; the page-level UI renders an anonymous landing.
+- `POST /api/auth/logout` clears the signed cookie.
+- Project / operation routes refuse requests with no signed cookie (401 `INVALID_SESSION`); the demo default fallback is gone.
+- `body.actor_id` rejection from 3I stays in force — impersonation is impossible in BOTH modes.
+
+The user store ships as in-process `MemoryUserStore` — restart wipes it. Seed via `POST /api/auth/dev/seed { password }` (gated by `E2E_SIGNED_AUTH=true`). Passwords are PBKDF2-SHA256 (120k iterations, 16-byte salt, 32-byte key), encoded as `pbkdf2-sha256-v1$<iter>$<salt-b64url>$<key-b64url>`. NEVER store plaintext passwords; tests assert this and use the obvious literal `"demo-password"` for the seeded users (`lawyer.kim@example.test`, `lawyer.park@example.test`, `biz.choi@example.test` — the `example.test` TLD is IANA-reserved by RFC 6761 and can never reach a real mailbox).
+
+### Gated signed-auth E2E
+
+`packages/web/e2e/signed-auth.spec.ts` is gated by `E2E_SIGNED_AUTH=true`. CI keeps it skipped. To run locally:
+
+```bash
+E2E_SIGNED_AUTH=true \
+AUTH_MODE=signed_cookie \
+AUTH_SESSION_SECRET=this-is-a-32-char-test-secret-aaa \
+  npm run e2e -w @contractops/web -- signed-auth.spec.ts
+```
+
+The spec logs in as `lawyer_kim`, walks the workflow to Issue Cards, logs out, logs in as `lawyer_park` (separate context), changes the same card, logs in as `business_choi` (third context), and verifies:
+- the audit + decision history reflects each signed-in user;
+- `business_choi` cannot approve via API (422 `OPERATION_REJECTED`);
+- `body.actor_id="lawyer_kim"` from the Choi context is rejected with 400 `OPERATION_ACTOR_ID_FORBIDDEN`;
+- the demo actor route returns 403 `DEMO_AUTH_DISABLED`;
+- DOCX export separation (clean / commentary) holds.
+
 ### Future path to real auth
 
-The auth boundary is intentionally the single chokepoint. A future milestone will:
+The auth boundary is intentionally the single chokepoint. 3J added the second `AuthSessionResolver` implementation; future milestones will:
 
-1. Replace `DemoSessionAuthProvider` with a real `AuthSessionResolver` backed by a signed JWT / DB-backed session table.
-2. Add a user table and a project-membership table; `requireAuthenticatedActor` throws `UnauthenticatedError` for missing sessions instead of defaulting.
-3. Layer real RBAC on top (per-project lawyer assignments, multi-tenant isolation).
-4. Replace the demo `POST /api/auth/demo/actor` route with a real `/api/auth/login` (OAuth / magic link / password); the demo route stays only behind an explicit `DEMO_AUTH=true` env flag for local development.
+1. **3K — OAuth / SSO provider integration.** Add a third `AuthSessionResolver` that exchanges authorization codes for sessions and creates / merges users on first login. Keep `signed_cookie` for password-backed accounts.
+2. **3L — Per-project assignment + production RBAC.** Add a project-membership table; gate operations on `(actor.id, project.id) ∈ membership` in addition to `actor.role === "human_lawyer"`.
+3. **3M — Audit of auth events.** Login, logout, session refresh, password change, account lockout — all should produce server-side audit entries (separate from the workflow audit log).
+4. **3N — Hardening.** Rate limiting on `/api/auth/login`, account lockout policy, MFA, password reset, email verification, CSRF tokens on logout, secret rotation with key-id support.
 
-Until then: production deployment **still requires real authentication and authorization**; this milestone is multi-user *demo* only. See ADR-016 for the full rationale.
+Until then: production deployment **still requires real OAuth/SSO + RBAC + rate limiting + audit of auth events**; 3J is the seam, not the destination. See ADR-016 (boundary) + ADR-017 (signed-cookie + user store) for the full rationale.
 
 ## Persistence (Milestones 3D + 3E + 3H)
 
