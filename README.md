@@ -157,6 +157,38 @@ npm run dev -w @contractops/web    # http://localhost:3000
 
 `*.docx` and `*_cover_email.md` are gitignored, and `npm run repo:hygiene` refuses to allow a tracked artifact of either shape. Generated exports from local runs land in your Downloads folder; never commit them. Ordinary documentation Markdown files (`README.md`, `CLAUDE.md`, `docs/*.md`) remain trackable — only the renderer-suffixed `*_cover_email.md` is treated as a generated artifact.
 
+## Lawyer-only UI guards (Milestone 3G)
+
+When the selected demo actor in the header is **not** a `human_lawyer` (i.e. `business_choi`), every lawyer-only button across the workflow renders **disabled** with a tooltip and inline warning:
+
+> ⚠ 변호사 권한이 필요한 작업입니다 (Requires human_lawyer)
+
+Guarded actions:
+
+- **Contract type** — `Confirm contract type`
+- **Deal memo** — `Approve Deal Memo`
+- **Drafting plan** — `Approve Drafting Plan`
+- **Issues** — `Accept` / `Reject` / `Defer` / `Partially accept` / `Re-accept` / `Re-reject` / `Re-defer` / `Re-partial`
+- **QA** — `Approve final`
+- **Exports** — every `Download …` button (clean DOCX, commentary DOCX, negotiation matrix, cover email)
+
+### UI is convenience. Server is authority.
+
+The UI guard is a UX nicety so non-lawyer users see disabled controls instead of clicking and getting HTTP 422 back. **It is not a security boundary.** Every operation still goes through `POST /api/projects/[id]/operations` and the server re-resolves `actor_id` against the demo registry. Lawyer-only ops attempted by `business_choi` are rejected with `422 OPERATION_REJECTED` even if the browser is bypassed (`packages/web/e2e/lawyer-ui-guards.spec.ts` and `multi-actor.spec.ts` both assert this).
+
+The helper:
+
+```ts
+import { canActAsLawyer, REQUIRES_LAWYER_MESSAGE } from "@/lib/demo-actors";
+import { useCurrentActor } from "@/components/store-provider";
+
+const isLawyer = canActAsLawyer(useCurrentActor());
+// disabled={!isLawyer}
+// title={!isLawyer ? REQUIRES_LAWYER_MESSAGE : undefined}
+```
+
+Production deployment **still requires real authentication and authorization** — see ADR-013 / ADR-014 and the "Future path to real auth" subsection below.
+
 ## Demo actor context (Milestone 3F)
 
 The header now carries an **"Acting as"** dropdown with three predefined demo actors:

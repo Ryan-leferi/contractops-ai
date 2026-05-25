@@ -2,8 +2,9 @@
 
 import { useParams } from "next/navigation";
 import { useState } from "react";
-import { useStore } from "@/components/store-provider";
+import { useCurrentActor, useStore } from "@/components/store-provider";
 import { actApproveDealMemo, actDraftDealMemo } from "@/lib/actions";
+import { REQUIRES_LAWYER_MESSAGE, canActAsLawyer } from "@/lib/demo-actors";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -34,6 +35,7 @@ export default function DealMemoPage() {
   }
 
   const dealMemo = state.deal_memo;
+  const isLawyer = canActAsLawyer(useCurrentActor());
 
   return (
     <div className="space-y-4">
@@ -85,13 +87,29 @@ export default function DealMemoPage() {
             </pre>
           </CardContent>
           {!dealMemo.approved && (
-            <div className="p-4 border-t flex gap-2">
-              <Button variant="success" onClick={approve} data-testid="approve-deal-memo-btn">
-                Approve Deal Memo (as human lawyer)
-              </Button>
-              <Button variant="outline" onClick={generate}>
-                Regenerate
-              </Button>
+            <div className="p-4 border-t space-y-2">
+              <div className="flex gap-2">
+                <Button
+                  variant="success"
+                  onClick={approve}
+                  disabled={!isLawyer}
+                  title={!isLawyer ? REQUIRES_LAWYER_MESSAGE : undefined}
+                  data-testid="approve-deal-memo-btn"
+                >
+                  Approve Deal Memo (as human lawyer)
+                </Button>
+                <Button variant="outline" onClick={generate}>
+                  Regenerate
+                </Button>
+              </div>
+              {!isLawyer && (
+                <p
+                  className="text-xs text-warning"
+                  data-testid="lawyer-required-note"
+                >
+                  ⚠ {REQUIRES_LAWYER_MESSAGE}
+                </p>
+              )}
             </div>
           )}
         </Card>

@@ -162,3 +162,28 @@ The registry lives in `packages/web/lib/demo-actors.ts` and is shared between cl
 - Existing core role guards stay the source of truth. Adding new lawyer-only ops doesn't require changes here — they inherit the protection automatically.
 - Client-side selection is persisted in `localStorage` under `contractops:demo-actor` and is per-browser-context. The Playwright multi-actor spec leverages this to seed each context with a different actor via `addInitScript`.
 - The legacy `DEMO_LAWYER` / `DEMO_USER` constants in `lib/actions.ts` and `lib/server-aggregate-context.ts` now alias the registry default (`lawyer_kim`) and `business_choi` respectively; the IDs they expose changed (`lawyer_demo` → `lawyer_kim`, `user_demo` → `business_choi`) but no test depended on the literal old values.
+
+---
+
+## ADR-014 — Lawyer-only UI affordances (UI guards are convenience, server is authority)
+
+**Source:** Milestone 3G scope; ADR-013 demo actor registry.
+
+**Decision:** Pages disable lawyer-only buttons in the browser when the selected demo actor's role is not `human_lawyer`, using a single helper `canActAsLawyer(actor)` exported from `packages/web/lib/demo-actors.ts` and a `useCurrentActor()` hook on the `StoreProvider`. Disabled buttons carry a `title` attribute with the bilingual message `REQUIRES_LAWYER_MESSAGE` ("변호사 권한이 필요한 작업입니다 (Requires human_lawyer)"); pages also render an inline `data-testid="lawyer-required-note"` warning when the selected actor cannot proceed.
+
+Guarded surfaces (all call sites already protected by core's `actor.role === "human_lawyer"` checks):
+
+- `/projects/[id]/contract-type` — confirm-type-btn
+- `/projects/[id]/deal-memo` — approve-deal-memo-btn
+- `/projects/[id]/drafting-plan` — approve-plan-btn
+- `/projects/[id]/issues` — accept-btn / reject-btn / defer-btn / partial-accept-btn / re-accept-btn-* / re-reject-btn-* / re-defer-btn-* / re-partial-btn-*
+- `/projects/[id]/qa` — approve-final-btn
+- `/projects/[id]/exports` — every `create-export-<type>-btn` (clean DOCX, commentary DOCX, negotiation matrix, cover email)
+
+**Consequence:**
+
+- **UI is convenience. Server is authority.** The `POST /api/projects/[id]/operations` route still resolves the supplied `actor_id` against the demo registry and rejects lawyer-only ops attempted by `business_choi` with HTTP 422. The Playwright spec asserts both: the UI button is disabled AND a forced API call returns 422.
+- The legacy "happy path" specs (`nda-happy-path`, `multi-session`, `multi-actor`) all run with `lawyer_kim` as the default actor, so adding the disabled-on-non-lawyer rule does not regress them — they were already only ever clicked as a lawyer.
+- No new dependency. The `title` attribute drives the tooltip; no JS tooltip library.
+- A future real-auth milestone replaces the demo registry chokepoint without changing the UI guards: `canActAsLawyer` still receives a fully-formed `Actor`, just one that came from a real session token instead of a `localStorage` selection.
+- Production deployment **still requires real authentication and authorization**. The UI guard is not a security boundary; only the server-side role check is.

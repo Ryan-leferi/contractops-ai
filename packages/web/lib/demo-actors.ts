@@ -99,3 +99,34 @@ export class UnknownActorError extends Error {
     );
   }
 }
+
+// ─────────────────────────────────────────────────────────────────────
+// UI role helpers (Milestone 3G)
+//
+// `canActAsLawyer` is the same predicate the core role guards use
+// (`actor.role === "human_lawyer"`) — exposed here so client pages can
+// pre-disable lawyer-only controls before the server rejects them.
+//
+//   ⚠ CONVENIENCE ONLY. Pages must still send the operation to the
+//   server, which re-checks the role and returns 422 if the resolved
+//   actor is not a lawyer. The UI disable is a UX nicety, not a
+//   security boundary.
+// ─────────────────────────────────────────────────────────────────────
+
+/**
+ * Bilingual message shown both as a `title` attribute on disabled
+ * lawyer-only buttons and as inline help text near guarded sections.
+ */
+export const REQUIRES_LAWYER_MESSAGE =
+  "변호사 권한이 필요한 작업입니다 (Requires human_lawyer)";
+
+/**
+ * `true` iff the actor's role is `human_lawyer`. Tolerant of
+ * undefined / null so call sites that may not have hydrated the
+ * StoreProvider yet can still call this without a runtime crash.
+ */
+export function canActAsLawyer(
+  actor: { role?: string } | null | undefined,
+): boolean {
+  return actor?.role === "human_lawyer";
+}

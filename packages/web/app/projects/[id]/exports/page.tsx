@@ -2,7 +2,8 @@
 
 import { useParams } from "next/navigation";
 import { useState } from "react";
-import { useStore } from "@/components/store-provider";
+import { useCurrentActor, useStore } from "@/components/store-provider";
+import { REQUIRES_LAWYER_MESSAGE, canActAsLawyer } from "@/lib/demo-actors";
 import {
   actCreateExport,
   mockCleanExportContent,
@@ -81,6 +82,7 @@ export default function ExportsPage() {
   const [busy, setBusy] = useState<ExportType | null>(null);
 
   const final = state.contract_versions.find((v) => v.final);
+  const isLawyer = canActAsLawyer(useCurrentActor());
 
   async function handleAction(spec: ExportSpec) {
     if (!final) return;
@@ -124,6 +126,15 @@ export default function ExportsPage() {
         </div>
       )}
 
+      {!isLawyer && (
+        <div
+          className="rounded-md border border-warning bg-warning/10 p-3 text-sm text-warning"
+          data-testid="lawyer-required-note"
+        >
+          ⚠ {REQUIRES_LAWYER_MESSAGE} — Export 다운로드 버튼은 비활성화됩니다.
+        </div>
+      )}
+
       <section data-testid="external-section">
         <h2 className="text-sm font-medium text-success mb-2">
           External — safe to send to counterparty
@@ -137,7 +148,8 @@ export default function ExportsPage() {
                 spec={s}
                 existing={existing}
                 onAction={() => handleAction(s)}
-                disabled={!final || busy !== null}
+                disabled={!final || busy !== null || !isLawyer}
+                disabledReason={!isLawyer ? REQUIRES_LAWYER_MESSAGE : undefined}
                 busy={busy === s.type}
               />
             );
@@ -158,7 +170,8 @@ export default function ExportsPage() {
                 spec={s}
                 existing={existing}
                 onAction={() => handleAction(s)}
-                disabled={!final || busy !== null}
+                disabled={!final || busy !== null || !isLawyer}
+                disabledReason={!isLawyer ? REQUIRES_LAWYER_MESSAGE : undefined}
                 busy={busy === s.type}
               />
             );
@@ -174,12 +187,14 @@ function ExportCard({
   existing,
   onAction,
   disabled,
+  disabledReason,
   busy,
 }: {
   spec: ExportSpec;
   existing: ExportFile | undefined;
   onAction: () => void;
   disabled: boolean;
+  disabledReason?: string;
   busy: boolean;
 }) {
   const externalClasses = "border-success/40 bg-success/5";
@@ -217,6 +232,7 @@ function ExportCard({
           variant={spec.audience === "external" ? "success" : "destructive"}
           onClick={onAction}
           disabled={disabled}
+          title={disabledReason}
           data-testid={`create-export-${spec.type}-btn`}
         >
           {busy ? "Working…" : spec.buttonLabel}

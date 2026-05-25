@@ -2,7 +2,8 @@
 
 import { useParams } from "next/navigation";
 import { useState } from "react";
-import { useStore } from "@/components/store-provider";
+import { useCurrentActor, useStore } from "@/components/store-provider";
+import { REQUIRES_LAWYER_MESSAGE, canActAsLawyer } from "@/lib/demo-actors";
 import {
   actApproveFinal,
   actCreateRevision,
@@ -27,6 +28,7 @@ export default function QAPage() {
   const pending = summary.pending;
   const versions = state.contract_versions;
   const latest = versions[versions.length - 1];
+  const isLawyer = canActAsLawyer(useCurrentActor());
   const final = versions.find((v) => v.final);
 
   async function runQA() {
@@ -145,7 +147,8 @@ export default function QAPage() {
             <Button
               variant="success"
               onClick={approveFinal}
-              disabled={!latest || latest.final || pending.length > 0}
+              disabled={!latest || latest.final || pending.length > 0 || !isLawyer}
+              title={!isLawyer ? REQUIRES_LAWYER_MESSAGE : undefined}
               data-testid="approve-final-btn"
             >
               Approve final
@@ -154,6 +157,14 @@ export default function QAPage() {
           <p className="text-xs text-muted-foreground">
             Final QA is a mock pass for now; real deterministic QA arrives in a later milestone.
           </p>
+          {!isLawyer && (
+            <p
+              className="text-xs text-warning"
+              data-testid="lawyer-required-note"
+            >
+              ⚠ {REQUIRES_LAWYER_MESSAGE}
+            </p>
+          )}
         </CardContent>
       </Card>
 

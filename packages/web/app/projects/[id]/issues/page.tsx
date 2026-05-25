@@ -2,8 +2,9 @@
 
 import { useParams } from "next/navigation";
 import { useMemo, useState } from "react";
-import { useStore } from "@/components/store-provider";
+import { useCurrentActor, useStore } from "@/components/store-provider";
 import { actDecideIssue, actRunMockReviews } from "@/lib/actions";
+import { REQUIRES_LAWYER_MESSAGE, canActAsLawyer } from "@/lib/demo-actors";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
@@ -71,6 +72,7 @@ export default function IssuesPage() {
   const [error, setError] = useState<string | null>(null);
   const [drafts, setDrafts] = useState<Record<string, DecisionDraft>>({});
   const [openHistory, setOpenHistory] = useState<Record<string, boolean>>({});
+  const isLawyer = canActAsLawyer(useCurrentActor());
 
   // ── Filters / sort (local UI state only — not persisted) ───────────
   const [filterSeverities, setFilterSeverities] = useState<IssueSeverity[]>([]);
@@ -214,6 +216,15 @@ export default function IssuesPage() {
           data-testid="page-error"
         >
           {error}
+        </div>
+      )}
+
+      {!isLawyer && (
+        <div
+          className="rounded-md border border-warning bg-warning/10 p-3 text-sm text-warning"
+          data-testid="lawyer-required-note"
+        >
+          ⚠ {REQUIRES_LAWYER_MESSAGE} — Issue Card 결정 / 재결정 버튼은 비활성화됩니다. 헤더의 "Acting as"에서 변호사 액터를 선택하세요.
         </div>
       )}
 
@@ -417,6 +428,7 @@ export default function IssuesPage() {
                     onReject={() => decide(c, "rejected")}
                     onDefer={() => decide(c, "deferred")}
                     onPartial={() => decidePartial(c)}
+                    isLawyer={isLawyer}
                   />
                 ))}
             </section>
@@ -440,6 +452,7 @@ export default function IssuesPage() {
                     onChangeDraft={(p) => setDraft(c.issue_id, p)}
                     onReDecide={(d) => decide(c, d)}
                     onRePartial={() => decidePartial(c)}
+                    isLawyer={isLawyer}
                   />
                 ))}
             </section>
@@ -562,6 +575,7 @@ function PendingCardRow({
   onReject,
   onDefer,
   onPartial,
+  isLawyer,
 }: {
   card: IssueCard;
   history: IssueDecisionHistoryEntry[];
@@ -573,7 +587,9 @@ function PendingCardRow({
   onReject: () => void;
   onDefer: () => void;
   onPartial: () => void;
+  isLawyer: boolean;
 }) {
+  const titleAttr = isLawyer ? undefined : REQUIRES_LAWYER_MESSAGE;
   return (
     <Card data-testid={`pending-card-${card.source_agent}`}>
       <CardHeader>
@@ -600,13 +616,34 @@ function PendingCardRow({
       </CardContent>
       <div className="p-4 border-t space-y-2">
         <div className="flex gap-2 flex-wrap">
-          <Button size="sm" variant="success" onClick={onAccept} data-testid="accept-btn">
+          <Button
+            size="sm"
+            variant="success"
+            onClick={onAccept}
+            disabled={!isLawyer}
+            title={titleAttr}
+            data-testid="accept-btn"
+          >
             Accept
           </Button>
-          <Button size="sm" variant="destructive" onClick={onReject} data-testid="reject-btn">
+          <Button
+            size="sm"
+            variant="destructive"
+            onClick={onReject}
+            disabled={!isLawyer}
+            title={titleAttr}
+            data-testid="reject-btn"
+          >
             Reject
           </Button>
-          <Button size="sm" variant="outline" onClick={onDefer} data-testid="defer-btn">
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={onDefer}
+            disabled={!isLawyer}
+            title={titleAttr}
+            data-testid="defer-btn"
+          >
             Defer
           </Button>
         </div>
@@ -621,7 +658,8 @@ function PendingCardRow({
             size="sm"
             variant="warning"
             onClick={onPartial}
-            disabled={!draft.partial_note.trim()}
+            disabled={!draft.partial_note.trim() || !isLawyer}
+            title={titleAttr}
             data-testid="partial-accept-btn"
           >
             Partially accept
@@ -658,6 +696,7 @@ function DecidedCardRow({
   onChangeDraft,
   onReDecide,
   onRePartial,
+  isLawyer,
 }: {
   card: IssueCard;
   history: IssueDecisionHistoryEntry[];
@@ -667,7 +706,9 @@ function DecidedCardRow({
   onChangeDraft: (patch: Partial<DecisionDraft>) => void;
   onReDecide: (decision: "accepted" | "rejected" | "deferred") => void;
   onRePartial: () => void;
+  isLawyer: boolean;
 }) {
+  const titleAttr = isLawyer ? undefined : REQUIRES_LAWYER_MESSAGE;
   return (
     <Card data-testid={`decided-card-${card.human_decision}`}>
       <CardHeader className="!pb-2">
@@ -741,6 +782,8 @@ function DecidedCardRow({
                 size="sm"
                 variant="success"
                 onClick={() => onReDecide("accepted")}
+                disabled={!isLawyer}
+                title={titleAttr}
                 data-testid={`re-accept-btn-${card.issue_id}`}
               >
                 Re-accept
@@ -749,6 +792,8 @@ function DecidedCardRow({
                 size="sm"
                 variant="destructive"
                 onClick={() => onReDecide("rejected")}
+                disabled={!isLawyer}
+                title={titleAttr}
                 data-testid={`re-reject-btn-${card.issue_id}`}
               >
                 Re-reject
@@ -757,6 +802,8 @@ function DecidedCardRow({
                 size="sm"
                 variant="outline"
                 onClick={() => onReDecide("deferred")}
+                disabled={!isLawyer}
+                title={titleAttr}
                 data-testid={`re-defer-btn-${card.issue_id}`}
               >
                 Re-defer
@@ -773,7 +820,8 @@ function DecidedCardRow({
                 size="sm"
                 variant="warning"
                 onClick={onRePartial}
-                disabled={!draft.partial_note.trim()}
+                disabled={!draft.partial_note.trim() || !isLawyer}
+                title={titleAttr}
                 data-testid={`re-partial-btn-${card.issue_id}`}
               >
                 Re-partial

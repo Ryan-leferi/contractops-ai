@@ -15,9 +15,11 @@ import { emptyStore, type AppStore } from "@/lib/actions";
 import type { Operation } from "@/lib/operations";
 import {
   DEFAULT_DEMO_ACTOR_ID,
+  DEMO_ACTOR_REGISTRY,
   isKnownDemoActorId,
   type DemoActorId,
 } from "@/lib/demo-actors";
+import type { Actor } from "@contractops/schemas";
 
 const ACTOR_STORAGE_KEY = "contractops:demo-actor";
 
@@ -355,6 +357,18 @@ export function useStore(): StoreContextValue {
 export function useProjectAudits(projectId: string): S.AuditLog[] {
   const { store } = useStore();
   return store.audits.filter((a) => a.project_id === projectId);
+}
+
+/**
+ * Resolve the currently selected demo actor id to the full Actor object
+ * from the registry (Milestone 3G). Pages use this to make role-aware
+ * decisions in the UI — e.g. disabling lawyer-only buttons when the
+ * selected actor is not a `human_lawyer`. The server still re-checks
+ * the role on every operation; this hook only powers the UX guard.
+ */
+export function useCurrentActor(): Actor {
+  const { actorId } = useStore();
+  return DEMO_ACTOR_REGISTRY[actorId];
 }
 
 // ───────────────────────────────────────────────────────────────────────

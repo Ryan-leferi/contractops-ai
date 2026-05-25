@@ -2,9 +2,10 @@
 
 import { useParams } from "next/navigation";
 import { useState } from "react";
-import { useStore } from "@/components/store-provider";
+import { useCurrentActor, useStore } from "@/components/store-provider";
 import { usePlaybooks } from "@/components/playbooks-provider";
 import { actClassifyAndConfirm } from "@/lib/actions";
+import { REQUIRES_LAWYER_MESSAGE, canActAsLawyer } from "@/lib/demo-actors";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -24,6 +25,9 @@ export default function ContractTypePage() {
 
   const sourcePackLocked = state.source_pack.locked;
   const playbookTypes = playbooks?.filter((p) => !p.is_custom_marker).map((p) => p.contract_type) ?? [];
+
+  const currentActor = useCurrentActor();
+  const isLawyer = canActAsLawyer(currentActor);
 
   async function confirmType(e: React.FormEvent) {
     e.preventDefault();
@@ -91,9 +95,22 @@ export default function ContractTypePage() {
                 Available Playbooks: {playbookTypes.join(", ") || "(loading…)"}
               </p>
             </div>
-            <Button type="submit" disabled={!confirmedType.trim() || !sourcePackLocked} data-testid="confirm-type-btn">
+            <Button
+              type="submit"
+              disabled={!confirmedType.trim() || !sourcePackLocked || !isLawyer}
+              title={!isLawyer ? REQUIRES_LAWYER_MESSAGE : undefined}
+              data-testid="confirm-type-btn"
+            >
               Confirm contract type (as human lawyer)
             </Button>
+            {!isLawyer && (
+              <p
+                className="text-xs text-warning"
+                data-testid="lawyer-required-note"
+              >
+                ⚠ {REQUIRES_LAWYER_MESSAGE}
+              </p>
+            )}
           </form>
         </CardContent>
       </Card>

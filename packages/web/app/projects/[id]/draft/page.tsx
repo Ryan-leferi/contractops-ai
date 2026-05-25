@@ -27,6 +27,21 @@ export default function DraftPage() {
   const versions = state.contract_versions;
   const v0 = versions.find((v) => v.version_number === "v0") ?? versions[0];
 
+  // Pre-condition check for the generate-v0 button. Server-side guards
+  // in `core.aggCreateV0` are still the authoritative check (they throw
+  // `Invalid workflow transition: drafting_plan_drafted -> ...` when the
+  // plan is not yet approved). The disabled state here is UX: a clear
+  // visible "blocked because Drafting Plan not approved" affordance so
+  // users don't click and watch a 422 error pop up.
+  const dealMemoApproved = state.deal_memo?.approved === true;
+  const draftingPlanApproved = state.drafting_plan?.approved === true;
+  const v0BlockedReason = !dealMemoApproved
+    ? "Deal Memo approval required"
+    : !draftingPlanApproved
+      ? "Drafting Plan approval required (변호사 승인된 Drafting Plan이 필요합니다)"
+      : null;
+  const v0Disabled = v0BlockedReason !== null;
+
   return (
     <div className="space-y-4">
       <div>
@@ -49,10 +64,23 @@ export default function DraftPage() {
             <CardTitle>No v0 draft yet</CardTitle>
             <CardDescription>Generate v0 once Deal Memo and Drafting Plan are approved.</CardDescription>
           </CardHeader>
-          <CardContent>
-            <Button onClick={generate} data-testid="generate-v0-btn">
+          <CardContent className="space-y-2">
+            <Button
+              onClick={generate}
+              disabled={v0Disabled}
+              title={v0BlockedReason ?? undefined}
+              data-testid="generate-v0-btn"
+            >
               Generate mock v0 draft
             </Button>
+            {v0BlockedReason && (
+              <p
+                className="text-xs text-warning"
+                data-testid="drafting-plan-required-note"
+              >
+                ⚠ {v0BlockedReason}
+              </p>
+            )}
           </CardContent>
         </Card>
       ) : (
