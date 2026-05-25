@@ -46,18 +46,30 @@ npm run e2e -w @contractops/web    # Playwright (mock-mode)
 
 The "LLM mode: MOCK" badge in the app header confirms the default build.
 
-## Real mode (Milestone 2E — OpenAI Deal Memo + Claude Counterparty Reviewer)
+## Real mode (Milestones 2E + 4A — OpenAI/Claude for selected roles)
 
-> **Warning.** Do not paste real confidential source documents into the UI or fixture during real-mode testing. Use sanitized or synthetic text only. The brief's §10 and §12 rules apply.
+> **Warning.** Do not paste real confidential source documents into the UI or fixture during real-mode testing. Use sanitized or synthetic text only. The brief's §10 and §12 rules apply. Production use awaits real auth + RBAC + retention/redaction controls.
 
-Two real-provider seams are live:
+Four real-provider seams are live:
 
-| Role | Provider | Server route | Status |
+| Role | Provider | Gating | Status |
 |---|---|---|---|
-| `deal_memo_drafter` | OpenAI | `/api/agent/deal-memo` | Milestone 2C |
-| `counterparty_reviewer` | Anthropic (Claude) | `/api/agent/counterparty-reviewer` | Milestone 2E |
+| `deal_memo_drafter` | OpenAI | `LLM_PROVIDER_ALLOWLIST` only (2C backward compat) | Milestone 2C |
+| `counterparty_reviewer` | Anthropic (Claude) | `LLM_PROVIDER_ALLOWLIST` only (2E backward compat) | Milestone 2E |
+| `contract_drafter` | OpenAI | `LLM_PROVIDER_ALLOWLIST` **AND** `REAL_LLM_ROLE_ALLOWLIST` | Milestone 4A |
+| `revision_agent` | OpenAI | `LLM_PROVIDER_ALLOWLIST` **AND** `REAL_LLM_ROLE_ALLOWLIST` | Milestone 4A |
 
-All other six roles stay on the in-browser mock. API keys live ONLY on the server — the browser uses fetch-only proxy providers.
+All other four roles stay on the in-browser / in-process mock. API keys live ONLY on the server.
+
+### Why a per-role allowlist?
+
+Before 4A, flipping `USE_REAL_LLM=true` enabled real mode for every role on the provider allowlist — including the contract drafter, which produces the most expensive + highest-stakes output. 4A adds `REAL_LLM_ROLE_ALLOWLIST` so adding a new role to real mode is always an explicit ops decision:
+
+- `REAL_LLM_ROLE_ALLOWLIST=` (empty / unset) → `contract_drafter` + `revision_agent` always mock, even when `USE_REAL_LLM=true` and `LLM_PROVIDER_ALLOWLIST=openai`.
+- `REAL_LLM_ROLE_ALLOWLIST=contract_drafter` → only the contract drafter escalates; revision stays mock.
+- `REAL_LLM_ROLE_ALLOWLIST=contract_drafter,revision_agent` → both escalate.
+
+The 2C / 2E roles remain on their original gating (provider allowlist only) so existing deployments don't break.
 
 Copy `.env.example` to `.env.local` and configure (enable one or both):
 
@@ -99,6 +111,31 @@ E2E_REAL_OPENAI=true USE_REAL_LLM=true OPENAI_API_KEY=sk-... \
 ```
 
 `E2E_REAL_OPENAI=true` is the only way the optional real-OpenAI Playwright spec runs. CI keeps the variable unset.
+
+### Gated real contract draft + revision E2E (Milestone 4A)
+
+`packages/web/e2e/real-contract-draft.spec.ts` is gated by `E2E_REAL_CONTRACT_DRAFT=true`. CI keeps it skipped. To run locally against the real OpenAI account:
+
+```bash
+E2E_REAL_CONTRACT_DRAFT=true \
+USE_REAL_LLM=true \
+LLM_PROVIDER_ALLOWLIST=openai \
+REAL_LLM_ROLE_ALLOWLIST=contract_drafter,revision_agent \
+OPENAI_API_KEY=sk-... \
+NEXT_PUBLIC_USE_REAL_LLM=true NEXT_PUBLIC_LLM_PROVIDER_ALLOWLIST=openai \
+  npm run e2e -w @contractops/web -- real-contract-draft.spec.ts
+```
+
+It creates a project with **synthetic source text only** (`example.test` org names, obviously invented amounts), walks the workflow, generates v0 via real `contract_drafter`, decides a mix of accept/reject Issue Cards, generates revision via real `revision_agent`, and asserts:
+
+- v0 + revision `AgentRun` records `mode=real`, `provider_id=openai`, `role=contract_drafter` / `revision_agent`.
+- v0 content is non-empty and looks like a contract (matches `제\d+조` or `Article \d+`).
+- The rejected Issue Card's `recommended_revision` text does NOT appear in the revision output.
+- Workflow + persistence + RBAC invariants from earlier milestones (Source Pack lock, lawyer-only approvals, append-only audits) remain intact.
+
+> **NEVER use real confidential client data in this spec or any real-mode session** until production security controls (auth, RBAC, retention, redaction, audit forwarding to a SIEM) are approved. The Alpha v0.1 spec is a development seam, not a production system.
+
+4B remains for the real review + source-consistency seam.
 
 ## Deterministic QA
 

@@ -70,16 +70,48 @@ export function buildServerAggregateContext(
 
   const envConfig = core.readEnvConfig();
   const realEnabled = envConfig.USE_REAL_LLM === true;
-  const allowlist = envConfig.LLM_PROVIDER_ALLOWLIST ?? [];
+  const providerAllowlist = envConfig.LLM_PROVIDER_ALLOWLIST ?? [];
+  const roleAllowlist = envConfig.REAL_LLM_ROLE_ALLOWLIST ?? [];
 
+  /**
+   * Per-role real-mode gating.
+   *
+   *   deal_memo_drafter    — 2C wiring; gated by provider allowlist only
+   *                           (REAL_LLM_ROLE_ALLOWLIST is NOT required to
+   *                           preserve backward compatibility with
+   *                           existing deployments).
+   *   counterparty_reviewer — 2E wiring; same backward-compat policy.
+   *   contract_drafter      — 4A wiring; REQUIRES role on
+   *                           REAL_LLM_ROLE_ALLOWLIST. Mock by default
+   *                           even when USE_REAL_LLM=true.
+   *   revision_agent        — 4A wiring; same as contract_drafter.
+   *
+   * Any other role is mock-only.
+   */
   function tryReal(role: AgentRole): core.LLMProvider | null {
     if (!realEnabled) return null;
     try {
-      if (role === "deal_memo_drafter" && allowlist.includes("openai")) {
+      if (role === "deal_memo_drafter" && providerAllowlist.includes("openai")) {
         return core.selectProviderByName("openai", envConfig);
       }
-      if (role === "counterparty_reviewer" && allowlist.includes("anthropic")) {
+      if (role === "counterparty_reviewer" && providerAllowlist.includes("anthropic")) {
         return core.selectProviderByName("anthropic", envConfig);
+      }
+      // Milestone 4A: new roles require explicit REAL_LLM_ROLE_ALLOWLIST
+      // entry on top of USE_REAL_LLM + LLM_PROVIDER_ALLOWLIST.
+      if (
+        role === "contract_drafter" &&
+        roleAllowlist.includes("contract_drafter") &&
+        providerAllowlist.includes("openai")
+      ) {
+        return core.selectProviderByName("openai", envConfig);
+      }
+      if (
+        role === "revision_agent" &&
+        roleAllowlist.includes("revision_agent") &&
+        providerAllowlist.includes("openai")
+      ) {
+        return core.selectProviderByName("openai", envConfig);
       }
     } catch {
       // Real-mode misconfigured (missing key, etc.) — fall back to mock.
