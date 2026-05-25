@@ -1,0 +1,47 @@
+{
+  "name": "Synthetic NDA fixture",
+  "description": "Wholly synthetic bidirectional NDA scenario for end-to-end Alpha v0.1 evaluation (Milestone 4C). Counterparty uses the IANA example.test domain; amounts, dates, and party names are obviously invented. No real client / counterparty / BOF facts. This file is loaded by the alpha-evaluation runner (scripts/run-alpha-evaluation.ts) and MUST NOT be used to seed real workflows.",
+  "project_name": "Synthetic NDA — joint product evaluation Q1",
+  "contract_type": "NDA",
+  "source_documents": [
+    {
+      "file_name": "synthetic_nda_term_sheet.pdf",
+      "source_type": "term_sheet",
+      "version": "1",
+      "incorporated": true,
+      "source_priority": 1
+    },
+    {
+      "file_name": "synthetic_nda_counterparty_email.eml",
+      "source_type": "email",
+      "version": "1",
+      "incorporated": true,
+      "source_priority": 2
+    },
+    {
+      "file_name": "synthetic_nda_internal_brief.docx",
+      "source_type": "internal_brief",
+      "version": "1",
+      "incorporated": false,
+      "source_priority": 3
+    }
+  ],
+  "intake_answers": {
+    "counterparty_name": "Example Test Corp, Ltd. (example.test)",
+    "direction": "쌍방향 (mutual)",
+    "purpose": "Joint product evaluation for a synthetic integration project",
+    "term_months": "24",
+    "governing_law": "Republic of Korea"
+  },
+  "source_contents": {
+    "synthetic_nda_term_sheet.pdf": "TERM SHEET (synthetic test fixture — no real party data).\n\nCounterparty: Example Test Corp, Ltd. (example.test domain).\nSubject: Mutual non-disclosure for joint product evaluation.\nTerm: 24 months from execution, auto-renewing 12 months unless 30-day written notice.\nConfidential info: written, oral, electronic forms; technical and commercial materials.\nCarve-outs: independently developed; publicly known through no fault of recipient; rightfully obtained from a third party without confidentiality obligation; legally compelled disclosure with prompt notice.\nReturn / destruction: upon request or expiration, within 14 days.\nGoverning law: Republic of Korea. Forum: Seoul Central District Court.\nNon-circumvention: 12 months post-termination.\n(Synthetic fixture; do NOT treat as a real proposal.)",
+    "synthetic_nda_counterparty_email.eml": "From: counterparty@synthetic.example.test\nSubject: NDA draft — please send\n\nHi,\n\nThanks for the discussion. Please send your standard mutual NDA draft for review. We will need a 24-month confidentiality period and standard carve-outs. We prefer Korean law and Seoul venue.\n\nBest,\nSynthetic Counterparty\n(Synthetic fixture — no real sender.)",
+    "synthetic_nda_internal_brief.docx": "Internal brief (synthetic). Engagement: synthetic joint product evaluation. Sensitivity: high — technical roadmap details may be shared. Internal counsel preference: mutual NDA, 24-month term, standard residual-knowledge clause acceptable, no IP assignment language. (Synthetic fixture.)"
+  },
+  "issue_decisions": [
+    { "match": "first_critical", "decision": "rejected" },
+    { "match": "first_high", "decision": "accepted" },
+    { "match": "first_medium", "decision": "partially_accepted", "partial_note": "Acceptable with explicit residual-knowledge carve-out limited to general know-how" },
+    { "match": "default", "decision": "accepted" }
+  ]
+}

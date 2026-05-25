@@ -8,7 +8,20 @@ AI drafts and reviews. The human lawyer decides and approves.
 
 ## Status
 
-Pre-MVP. The repository currently holds context and guardrail documents only. See [TASKS.md](TASKS.md) for the active milestone.
+**Alpha v0.1 — FROZEN as of Milestone 4C (2026-05-25).** No new product features are added after this point. See [docs/09_ALPHA_READINESS_CHECKLIST.md](docs/09_ALPHA_READINESS_CHECKLIST.md) for the line-by-line readiness review and [docs/10_ALPHA_EVALUATION_REPORT.md](docs/10_ALPHA_EVALUATION_REPORT.md) for the most recent end-to-end evaluation across the three sanitized scenarios (NDA / Service Agreement / Event Booth Entry).
+
+Only the following changes are accepted against the frozen alpha:
+
+- bug fixes
+- failing-test fixes
+- security fixes
+- broken-invariant fixes
+- documentation updates
+- post-alpha backlog items, clearly marked as backlog (tracked in [docs/11_POST_ALPHA_BACKLOG.md](docs/11_POST_ALPHA_BACKLOG.md))
+
+OAuth/SSO, external sending (email/e-signature), PDF conversion, real document ingestion security controls, multi-tenant org RBAC, and new real-LLM providers are **explicitly out of scope** for Alpha v0.1. See ADR-016 / ADR-017 / ADR-021 for the boundary, and the [Security and production limitations](#security-and-production-limitations-alpha-v01) section below.
+
+[TASKS.md](TASKS.md) records the original mock-MVP milestone plan (Milestones 0–5). The Alpha v0.1 real-LLM extension (2A–4C) is tracked in commit history + ADRs.
 
 ## Single source of truth
 
@@ -681,6 +694,53 @@ npm run verify
 That is exactly the same chain CI runs (test → typecheck → build → fixture → e2e → repo:hygiene), all in mock mode. The whole run takes a few minutes on a developer laptop.
 
 **Real-provider tests are manual and optional.** The real OpenAI Deal Memo Playwright spec runs only when `E2E_REAL_OPENAI=true` is explicitly set along with the matching server-side and `NEXT_PUBLIC_*` envs — see the "Real mode" section above. CI must never have these set. Do not paste real confidential source documents into any test, fixture, or local debug run; PLATFORM_BRIEF.md §10/§12 apply.
+
+## Alpha evaluation (Milestone 4C)
+
+Three sanitized fixtures cover the contract families wired into the Alpha v0.1 platform:
+
+| Fixture | Contract type | Notes |
+|---|---|---|
+| `fixtures/synthetic-nda.json` | NDA | Bidirectional, `example.test` counterparty, 24-month term |
+| `fixtures/synthetic-service-agreement.json` | Service Agreement | Synthetic vendor, payment milestones, SLA optional |
+| `fixtures/synthetic-booth-event.json` | Event Booth Entry | Existing fixture from Milestone 0; reused unchanged |
+
+All three fixtures contain **only synthetic content** — `example.test` domains, obviously invented amounts, no real counterparty / client / BOF facts.
+
+Run the evaluation:
+
+```bash
+npm run alpha:eval
+```
+
+The runner (`scripts/run-alpha-evaluation.ts`) walks each fixture through the full workflow (create → sources → lock → classify → playbook → intake → Deal Memo → Drafting Plan → v0 → reviews → decisions → final QA → revision → final approval → exports), records stage completion + Issue Card counts + export metadata + invariant outcomes, and writes a markdown report to `docs/10_ALPHA_EVALUATION_REPORT.md`. The script exits non-zero if any invariant fails.
+
+Pinned invariants enforced by the runner (in addition to the unit + acceptance suite):
+
+- Rejected Issue Cards are NEVER applied to the revision.
+- Pending Issue Cards block final approval (any pending → final approval throws).
+- The `clean_docx` export contains no internal-commentary markers (`[COMMENTARY]`, `[INTERNAL]`, `[REDLINE_RATIONALE]`, `[NEGOTIATION_GUIDANCE]`, `법무주석`).
+- The `commentary_docx` and `negotiation_matrix_docx` exports carry the `INTERNAL ONLY` banner.
+- Source Pack lock is enforced (cannot mutate sources after lock).
+- Lawyer-only ops (approvals, final approve, decide issue, classify) refuse non-lawyer actors.
+
+See [docs/09_ALPHA_READINESS_CHECKLIST.md](docs/09_ALPHA_READINESS_CHECKLIST.md) for the area-by-area readiness review and [docs/10_ALPHA_EVALUATION_REPORT.md](docs/10_ALPHA_EVALUATION_REPORT.md) for the most recent run's results + go/no-go recommendation.
+
+## Security and production limitations (Alpha v0.1)
+
+**Alpha v0.1 is a development seam, not a production system.** Do not run real confidential client documents through it. The platform meets the seam-level requirements for an internal alpha demo (mock-mode everywhere by default, gated real-LLM seams for development, append-only audit logs, demo actor + RBAC matrix, durable persistence option). It does NOT meet the requirements for production legal work:
+
+| Concern | Alpha v0.1 status |
+|---|---|
+| Authentication | Demo actor cookie (default) OR signed-cookie session against an in-memory user store (3J). **No OAuth, no SSO, no NextAuth, no enterprise IdP integration.** |
+| Multi-tenancy / org RBAC | Project-scoped membership + 4-role permission matrix (3L). **No org-level tenancy boundary, no per-org data isolation, no admin UI for membership across orgs.** |
+| External sending | **Not implemented.** Cover email is a Markdown download only. The platform NEVER sends email, NEVER triggers e-signature, NEVER POSTs to a counterparty endpoint. |
+| PDF conversion | **Not implemented.** Source files are referenced by metadata only; their content is provided as text (`source_contents`). |
+| Real-document ingestion security | **Not implemented.** No on-server file scanning, no in-flight redaction, no retention policy enforcement, no audit forwarding to a SIEM, no encryption beyond the persistence driver's defaults. |
+| Real-LLM mode | Off by default. Six roles can be opted in via `USE_REAL_LLM` + `LLM_PROVIDER_ALLOWLIST` + `REAL_LLM_ROLE_ALLOWLIST` (see [Real mode](#real-mode-milestones-2e--4a--4b--openaiclaude-for-selected-roles)). **Normal CI is mock-only** and never holds API keys. **Use synthetic data only.** |
+| Confidential data | **Forbidden.** Until the controls above ship, do not paste or upload real confidential source documents into any environment — local dev, gated E2E specs, or otherwise. |
+
+These limitations are tracked in [docs/11_POST_ALPHA_BACKLOG.md](docs/11_POST_ALPHA_BACKLOG.md). Production deployment requires explicit go-ahead AND completion of the production-blocking items in that backlog. Nothing in Alpha v0.1 implies any of those items will be implemented.
 
 ## Hard rules
 

@@ -1,0 +1,49 @@
+{
+  "name": "Synthetic Service Agreement fixture",
+  "description": "Wholly synthetic vendor service agreement scenario for end-to-end Alpha v0.1 evaluation (Milestone 4C). Counterparty uses the IANA example.test domain; amounts, dates, and party names are obviously invented. No real client / counterparty / BOF facts. This file is loaded by the alpha-evaluation runner (scripts/run-alpha-evaluation.ts) and MUST NOT be used to seed real workflows.",
+  "project_name": "Synthetic Service Agreement — vendor integration Q2",
+  "contract_type": "Service Agreement",
+  "source_documents": [
+    {
+      "file_name": "synthetic_service_sow.pdf",
+      "source_type": "term_sheet",
+      "version": "1",
+      "incorporated": true,
+      "source_priority": 1
+    },
+    {
+      "file_name": "synthetic_service_quote.xlsx",
+      "source_type": "quote",
+      "version": "1",
+      "incorporated": true,
+      "source_priority": 2
+    },
+    {
+      "file_name": "synthetic_service_vendor_intro.eml",
+      "source_type": "email",
+      "version": "1",
+      "incorporated": false,
+      "source_priority": 3
+    }
+  ],
+  "intake_answers": {
+    "counterparty_name": "Example Test Vendor, Ltd. (example.test)",
+    "scope": "Synthetic data-pipeline integration: ingestion connectors, scheduled exports, monitoring dashboards.",
+    "fee_total": "48,000,000 KRW (VAT excluded)",
+    "payment_schedule": "30% on signing, 40% on milestone 1 acceptance, 30% on final acceptance",
+    "term_start": "2027-07-01",
+    "term_end": "2028-06-30",
+    "sla": "99.5% monthly availability target; 4-hour incident response window during business hours"
+  },
+  "source_contents": {
+    "synthetic_service_sow.pdf": "SCOPE OF WORK (synthetic test fixture).\n\nVendor: Example Test Vendor, Ltd. (example.test domain).\nClient: Synthetic In-house Team.\nServices: data-pipeline integration — three connectors, scheduled hourly exports, monitoring dashboard, on-call rotation during business hours.\nMilestone 1: connector delivery + UAT (2027-09-30).\nMilestone 2: dashboard delivery + UAT (2027-12-31).\nFinal acceptance: 2028-03-31.\nFee: 48,000,000 KRW (VAT excluded). 30% on signing; 40% on M1 acceptance; 30% on final acceptance.\nTerm: 2027-07-01 to 2028-06-30, with 12-month maintenance option.\nSLA: 99.5% monthly uptime, 4-hour incident response (business hours), 24-hour resolution for P1.\nIP: deliverables transferred to client on payment; vendor retains pre-existing IP and reusable libraries.\nTermination for convenience: 60-day notice with pro-rata refund.\n(Synthetic fixture; no real-world facts.)",
+    "synthetic_service_quote.xlsx": "Synthetic quote.\nLine item 1: 3 × ingestion connector @ 8,000,000 KRW = 24,000,000 KRW.\nLine item 2: monitoring dashboard build = 16,000,000 KRW.\nLine item 3: 12-month maintenance retainer (optional) = 8,000,000 KRW.\nSubtotal (with maintenance): 48,000,000 KRW (VAT excluded).\nPayment terms: 30% signing, 40% M1 acceptance, 30% final acceptance.\n(Synthetic fixture.)",
+    "synthetic_service_vendor_intro.eml": "From: vendor@synthetic.example.test\nSubject: Service agreement — initial draft\n\nHi,\n\nFollowing our scoping call, please share the standard service agreement template. We are aligned on the SOW + quote and would like to start UAT in September. Looking forward to receiving the draft.\n\nThanks,\nSynthetic Vendor\n(Synthetic fixture — no real sender.)"
+  },
+  "issue_decisions": [
+    { "match": "first_critical", "decision": "rejected" },
+    { "match": "first_high", "decision": "accepted" },
+    { "match": "first_medium", "decision": "partially_accepted", "partial_note": "Acceptable if SLA penalty cap raised to 15% of monthly fees" },
+    { "match": "default", "decision": "accepted" }
+  ]
+}
