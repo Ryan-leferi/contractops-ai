@@ -265,8 +265,18 @@ describe("POST /api/projects/[id]/operations — session actor", () => {
   });
 
   it("uses the session actor; AuditLog records that actor (not the body)", async () => {
+    // Milestone 3L: PARK needs a project membership to act. KIM
+    // (the creator) is auto-owner_lawyer, so we add PARK as
+    // reviewer_lawyer via the membership helper before the op.
     const { state } = await createProjectInStore("session-actor-audit", KIM);
     const projectId = state.project.id;
+    const { addMembershipToProject } = await import("../lib/server-store");
+    await addMembershipToProject(
+      projectId,
+      { actor: PARK, project_role: "reviewer_lawyer" },
+      KIM,
+    );
+
     const res = await operationsPOST(
       buildRequest({
         url: `http://x/api/projects/${projectId}/operations`,
@@ -312,9 +322,14 @@ describe("POST /api/projects/[id]/operations — session actor", () => {
     expect((res.headers.get("set-cookie") ?? "").toLowerCase()).toMatch(/max-age=0/);
   });
 
-  it("business_choi cookie → approve_deal_memo refused (422 OPERATION_REJECTED)", async () => {
-    // Walk a project up to deal_memo_drafted as Kim so the role guard
-    // is reachable when business_choi attempts to approve.
+  it("business_choi (no membership) cookie → approve_deal_memo refused (403 PROJECT_ACCESS_DENIED)", async () => {
+    // Milestone 3L: a cookie alone is no longer enough — the actor
+    // must also have an active project membership. business_choi
+    // here has none, so the membership boundary fires BEFORE the
+    // core role guard. Even with a membership (3L "permission
+    // denied" path) the rejection is still 403, just a different
+    // sub-code. The lawyer-only core guard remains as defense in
+    // depth (exercised by tests in @contractops/core).
     const { state } = await createProjectInStore("choi-cannot-approve", KIM);
     const id = state.project.id;
     const walk = async (cookie: string, body: unknown) =>
@@ -364,17 +379,28 @@ describe("POST /api/projects/[id]/operations — session actor", () => {
     }
     await walk(kimCookie, { name: "draft_deal_memo", args: {} });
 
-    // Switch to business_choi via the cookie and try to approve.
+    // Switch to business_choi via the cookie and try to approve. The
+    // membership layer denies first (Choi was never added).
     const refused = await walk(cookieFor(CHOI.id), {
       name: "approve_deal_memo",
       args: {},
     });
-    expect(refused.status).toBe(422);
+    expect(refused.status).toBe(403);
     const refusedBody = await readJson<{ code: string; error: string }>(refused);
-    expect(refusedBody.code).toBe("OPERATION_REJECTED");
-    expect(refusedBody.error.toLowerCase()).toMatch(/lawyer/);
+    expect(refusedBody.code).toBe("PROJECT_ACCESS_DENIED");
 
-    // And lawyer_park's cookie succeeds where Choi failed.
+    // PARK must first be granted reviewer_lawyer membership by KIM
+    // (the owner). Then PARK's cookie succeeds where Choi failed.
+    // NB: approve_deal_memo permission belongs to owner_lawyer only —
+    // reviewer_lawyer doesn't have it. So we add PARK as
+    // owner_lawyer for this test to demonstrate the lawyer happy path.
+    const { addMembershipToProject } = await import("../lib/server-store");
+    await addMembershipToProject(
+      id,
+      { actor: PARK, project_role: "owner_lawyer" },
+      KIM,
+    );
+
     const ok = await walk(cookieFor(PARK.id), {
       name: "approve_deal_memo",
       args: {},

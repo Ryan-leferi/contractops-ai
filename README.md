@@ -347,9 +347,70 @@ AUTH_SESSION_SECRET=this-is-a-32-char-test-secret-aaa \
 
 Walks failed-login → successful-login → logout and verifies the dev inspect route returns the three events in order, with the right `metadata.detail` values, and zero password / token / secret leakage.
 
+## Project membership + minimal RBAC (Milestone 3L)
+
+Every project now carries a small list of `ProjectMembership` rows inside its `ProjectState`. The route layer checks (actor, project, permission) on every read and every mutation — server-side authoritative, UI guards are only a convenience layer.
+
+| `project_role` | Highlights of what the matrix grants |
+|---|---|
+| `owner_lawyer` | Every permission. Auto-granted to the project creator (the creator must be `human_lawyer`; non-lawyer creators get HTTP 403 `NON_LAWYER_CANNOT_CREATE_PROJECT`). Only role that can `manage_memberships` or `approve_final`. |
+| `reviewer_lawyer` | Everything EXCEPT the four approvals (`approve_deal_memo` / `approve_drafting_plan` / `approve_final`) and `manage_memberships`. Per the 3L spec: can decide Issue Cards, run reviews, run QA. |
+| `business_contributor` | `view_project`, `add_source` (pre-lock), `answer_intake`, `export_clean`. Cannot approve, decide, lock, or export internal. |
+| `business_viewer` | `view_project` + `export_clean`. Read-only. |
+
+The full permission map (`PROJECT_ROLE_MATRIX`) lives in `packages/web/lib/auth/permissions.ts`. Each Operation in `lib/operations.ts` maps to exactly one Permission via `mapOperationToPermission` — operations not in the map fail closed.
+
+### How authorization fires
+
+```
+browser ──► POST /api/projects/[id]/operations { name, args }   ← no actor_id
+                  │
+                  ▼  resolveActorFromRequest(request)   (3I / 3J session)
+                  │
+                  ▼  getProjectState(projectId)
+                  │
+                  ▼  requireProjectPermission(state, actor.id, mapOperationToPermission(op))
+                  │           │
+                  │           ├── no membership   → 403 PROJECT_ACCESS_DENIED
+                  │           ├── role lacks perm → 403 PROJECT_PERMISSION_DENIED
+                  │           └── allowed          → continue
+                  ▼
+            applyOperationToStore(id, op, actor) → core.agg*(state, …, actor)
+                  │
+                  └── core role guard ("actor.role === 'human_lawyer'") is STILL
+                       in place as defense in depth; produces 422 OPERATION_REJECTED
+                       only if the matrix accidentally allowed a non-lawyer through.
+```
+
+The same `requireProjectPermission` call gates every other project-scoped route — `GET /api/projects/[id]`, `GET /api/projects/[id]/audit-logs`, `GET /api/projects/[id]/decision-history`, `POST /api/exports/render`. The project list (`GET /api/projects`) filters via `isProjectVisibleTo` so non-member projects don't leak.
+
+### Membership management API
+
+| Route | Method | Who | Purpose |
+|---|---|---|---|
+| `/api/projects/[id]/memberships` | `GET` | any active member | List memberships + return caller's `my_membership` |
+| `/api/projects/[id]/memberships` | `POST { actor_id, project_role }` | `owner_lawyer` only | Add a membership. Lawyer roles refused for non-lawyer actors (`PROJECT_ROLE_REQUIRES_LAWYER`); duplicate active membership rejected with 409. |
+| `/api/projects/[id]/memberships/[membership_id]` | `DELETE` | `owner_lawyer` only | Soft-delete: sets `disabled_at`. Refuses to remove the last active `owner_lawyer` (422 `CANNOT_REMOVE_LAST_OWNER`). Idempotent on already-disabled. |
+
+Both add + disable also append `membership_created` / `membership_disabled` rows to the existing append-only `AuditLog`.
+
+### Project Members UI
+
+A new sidebar entry `Members` (page: `/projects/[id]/members`) shows the caller's current `project_role`, lists every membership (active + disabled), and renders an "Add a member" form for `owner_lawyer`. The page hides controls the caller can't use, but EVERY action goes through `/api/projects/[id]/memberships` which re-checks the requester's `manage_memberships` permission — opening devtools to unhide the button does nothing.
+
+### Storage
+
+Memberships live INSIDE `ProjectState.memberships` so memory / file / Postgres adapters all work without new methods. Project list filtering reads each project's state to check the actor's membership — N+1 reads, acceptable for MVP. A future milestone moves memberships to a normalized index table; the migration is contained because every route already goes through `loadActiveMembership` / `requireProjectPermission` (ADR-019).
+
+### NOT production RBAC
+
+- No organization-level multi-tenancy, no group sync, no per-resource ACLs beyond (actor, project, role).
+- Lawyer-typed roles (`owner_lawyer`, `reviewer_lawyer`) only check `Actor.role === "human_lawyer"`. There is no jurisdiction check, no bar verification, no per-jurisdiction matrix.
+- Production deployment must layer real OAuth/SSO + group-derived membership on top (post-Alpha). See ADR-019.
+
 ### Future path to real auth
 
-The auth boundary is intentionally the single chokepoint. 3J added the second `AuthSessionResolver` implementation; 3K added the auth-event seam. Future milestones will:
+The auth boundary is intentionally the single chokepoint. 3J added the second `AuthSessionResolver` implementation; 3K added the auth-event seam; 3L added per-project RBAC. Future milestones will:
 
 1. **3L — OAuth / SSO provider integration.** Add a third `AuthSessionResolver` that exchanges authorization codes for sessions and creates / merges users on first login. Keep `signed_cookie` for password-backed accounts. Emit `oauth_login_success` / `oauth_login_failed` into the same 3K event log.
 2. **3M — Per-project assignment + production RBAC.** Add a project-membership table; gate operations on `(actor.id, project.id) ∈ membership` in addition to `actor.role === "human_lawyer"`. Emit `project_membership_changed` events.

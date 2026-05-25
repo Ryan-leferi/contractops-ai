@@ -110,11 +110,22 @@ describe("actor context — selected actor lands in AuditLog + decision history"
     const summaries = await allSummaries;
     for (const s of summaries) {
       const audits = await getProjectAudits(s.id);
-      expect(audits).toHaveLength(1);
-      const audit = audits[0]!;
-      expect(audit.event_type).toBe("project_created");
-      if (s.name === "kim-project") expect(audit.actor).toBe(KIM.id);
-      if (s.name === "park-project") expect(audit.actor).toBe(PARK.id);
+      // Milestone 3L: createProject emits TWO audits — project_created
+      // + the auto-owner_lawyer membership_created. Both carry the same
+      // creator actor, so the assertion logic stays the same.
+      expect(audits).toHaveLength(2);
+      const created = audits.find((a) => a.event_type === "project_created")!;
+      const membership = audits.find((a) => a.event_type === "membership_created")!;
+      expect(created.event_type).toBe("project_created");
+      expect(membership.event_type).toBe("membership_created");
+      if (s.name === "kim-project") {
+        expect(created.actor).toBe(KIM.id);
+        expect(membership.actor).toBe(KIM.id);
+      }
+      if (s.name === "park-project") {
+        expect(created.actor).toBe(PARK.id);
+        expect(membership.actor).toBe(PARK.id);
+      }
     }
   });
 

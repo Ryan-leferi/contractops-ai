@@ -38,9 +38,15 @@ describe("server-store: create / list / get", () => {
     const { state, audits } = await createProjectInStore("Demo project A");
     expect(state.project.name).toBe("Demo project A");
     expect(state.project.status).toBe("created");
-    // Project creation emits exactly one audit log entry.
-    expect(audits).toHaveLength(1);
+    // Project creation now emits TWO audit log entries (Milestone 3L):
+    // project_created + membership_created (the auto-owner_lawyer grant).
+    expect(audits).toHaveLength(2);
     expect(audits[0]!.event_type).toBe("project_created");
+    expect(audits[1]!.event_type).toBe("membership_created");
+    // The auto-membership is owner_lawyer for the creator.
+    expect(state.memberships).toHaveLength(1);
+    expect(state.memberships[0]!.project_role).toBe("owner_lawyer");
+    expect(state.memberships[0]!.actor_id).toBe(state.project.created_by);
 
     const summaries = await listProjectSummaries();
     expect(summaries).toHaveLength(1);
@@ -49,7 +55,9 @@ describe("server-store: create / list / get", () => {
     // Round-trip through get*.
     const fetched = await getProjectState(state.project.id);
     expect(fetched?.project.id).toBe(state.project.id);
-    expect(await getProjectAudits(state.project.id)).toHaveLength(1);
+    // Milestone 3L: createProject emits 2 audits (project_created +
+    // auto-owner_lawyer membership_created).
+    expect(await getProjectAudits(state.project.id)).toHaveLength(2);
     expect(await getProjectDecisionHistory(state.project.id)).toEqual([]);
   });
 
@@ -337,7 +345,8 @@ describe("resetStore", () => {
     await createProjectInStore("a");
     await createProjectInStore("b");
     expect((await debugStoreSizes()).projects).toBe(2);
-    expect((await debugStoreSizes()).totalAudits).toBe(2);
+    // 2 projects × (project_created + membership_created) = 4 audits.
+    expect((await debugStoreSizes()).totalAudits).toBe(4);
     await resetStore();
     expect(await debugStoreSizes()).toEqual({ projects: 0, totalAudits: 0, totalHistory: 0 });
     expect(await listProjectSummaries()).toEqual([]);

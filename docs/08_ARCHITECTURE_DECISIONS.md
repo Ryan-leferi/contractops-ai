@@ -387,3 +387,84 @@ Storage seam: `AuthEventStore` interface mirrors the established `PersistenceAda
 - **Append-only contract identical to other journals.** `AuthEventAppendOnlyViolationError` mirrors `AppendOnlyViolationError` on the persistence adapter — same semantics, same enforcement pattern.
 - **NOT a production SIEM.** Still missing: real backend, alerting (e.g. on `login_failed` rate spikes per IP), retention policy, tamper-evident storage, integration with incident-response tooling. ADR-018 is the SEAM; the SIEM integration is a future milestone. Production deployment **still requires** a real security monitoring pipeline.
 - **No new dependencies.** UUID v4 from `node:crypto.randomUUID`. No `winston`, `pino`, `bunyan`, or `@datadog/*` package added. The future SIEM-forwarder milestone pulls in exactly what the chosen backend needs.
+
+---
+
+## ADR-019 — Project membership stored inside ProjectState + minimal RBAC matrix (Milestone 3L)
+
+**Source:** Milestone 3L scope; ADR-016 (auth boundary); ADR-017 (signed-cookie + user store).
+
+**Decision:** Add per-project memberships as a small list inside `ProjectState.memberships: ProjectMembership[]`, gate every project-scoped route by a matrix-based permission check, and refuse to create a project when the resolved session actor is not a `human_lawyer`.
+
+Membership shape (`packages/schemas/src/project-membership.ts`):
+
+```
+ProjectMembership {
+  id            mem_<uuid>
+  project_id    matches ProjectState.project.id
+  actor_id      matches Actor.id  (resolved via session, never trusted from body)
+  project_role  "owner_lawyer" | "reviewer_lawyer" | "business_contributor" | "business_viewer"
+  created_at    ISO 8601
+  created_by    actor_id of whoever granted it (the auto-grant uses the creator's own id)
+  disabled_at   ISO 8601 or null   (soft-delete; never hard-removed, preserving the audit trail)
+}
+```
+
+Storage trade-off: memberships live INSIDE `ProjectState` rather than in a separate journal at the persistence-adapter level. This was chosen because (a) memberships are bounded per-project (typically ≤ 10 rows), not append-only-forever; (b) every persistence adapter (memory / file / Postgres) handles `ProjectState` blob writes uniformly — no new `appendMembership` method needed; (c) the project list visibility filter requires N+1 reads which is acceptable for the MVP. A future milestone moves memberships to a normalized index table; the migration is contained because every route already goes through `loadActiveMembership` / `requireProjectPermission`.
+
+Permission matrix (`packages/web/lib/auth/permissions.ts`):
+
+```
+owner_lawyer         every permission, incl. approve_final + manage_memberships
+reviewer_lawyer      everything EXCEPT { approve_deal_memo, approve_drafting_plan,
+                                          approve_final, manage_memberships }
+business_contributor view_project + add_source + answer_intake + export_clean
+business_viewer      view_project + export_clean (read-only)
+```
+
+`mapOperationToPermission(op)` maps every `Operation` variant to exactly one permission and fails CLOSED (returns `null` → 403) for unmapped ops — adding a new `Operation` without touching the map can't accidentally open a hole. `mapExportTypeToPermission(type)` does the same for `export_clean` (any member) vs `export_internal` (lawyer-only — commentary + negotiation matrix).
+
+Server-side enforcement flow:
+
+```
+route → resolveActorFromRequest    (3I / 3J session)
+      → getProjectState
+      → requireProjectPermission(state, actor.id, mapOperationToPermission(op))
+              ├── no membership     → ProjectAccessDeniedError      → 403 PROJECT_ACCESS_DENIED
+              ├── role lacks perm   → ProjectPermissionDeniedError  → 403 PROJECT_PERMISSION_DENIED
+              └── allowed           → continue
+      → applyOperationToStore        (core role guard still in place as defense in depth)
+```
+
+Auto-membership: `createProjectInStore` adds an `owner_lawyer` membership for the creator atomically (single `adapter.createProject(state, creationAudit)` call) and emits a `membership_created` AuditLog row. A non-lawyer creator is refused at this point (`NonLawyerCannotCreateProjectError` → 403 `NON_LAWYER_CANNOT_CREATE_PROJECT`) so an unmanageable project can never be created.
+
+Membership management API (owner-only):
+
+```
+GET    /api/projects/[id]/memberships                          any active member
+POST   /api/projects/[id]/memberships                          owner_lawyer
+DELETE /api/projects/[id]/memberships/[membership_id]          owner_lawyer
+```
+
+Granting a lawyer-typed project role to a non-lawyer global actor is refused (`PROJECT_ROLE_REQUIRES_LAWYER` → 403). Disabling the LAST active `owner_lawyer` is refused (`CANNOT_REMOVE_LAST_OWNER` → 422). Disabling is soft — the row stays for the audit trail (`disabled_at` is set, never deleted), so `membership_disabled` AuditLog entries paired with the original `membership_created` give a complete history.
+
+UI: `/projects/[id]/members` shows the caller's `my_project_role`, the full membership list, and (for owners) the add / disable controls. The page hides controls the caller can't use, but every action goes through the same authoritative server check — no devtools bypass.
+
+Test infrastructure:
+
+- `tests/permissions.test.ts` (40+ cases) — exhaustive matrix truth table + operation/export mappers.
+- `tests/project-authz.test.ts` (15+ cases) — `loadActiveMembership` / `requireProjectMembership` / `requireProjectPermission` happy paths + every error mode (no_membership, membership_disabled, permission_denied).
+- `tests/membership-routes.test.ts` (15+ cases) — route handlers via direct invocation: GET filter, GET-by-id denial, audit-log/decision-history lawyer-only, operations permission check, body.actor_id rejection still fires, add member happy + duplicate + lawyer-role guard, disable happy + last-owner refusal + non-owner denial.
+- `e2e/membership-rbac.spec.ts` — full multi-context owner → reviewer → contributor flow (kim creates, kim adds park as reviewer, park decides, kim adds choi as contributor, choi can view/answer-intake, choi cannot approve/decide/export-internal, body.actor_id spoofing rejected).
+- Updated existing specs (multi-actor, lawyer-ui-guards) to seed memberships before switching actors — old "lawyer-only" 422 paths are now 403 from the matrix layer.
+
+**Consequence:**
+
+- **Authoritative authorization.** Every project read AND every mutation passes through `requireProjectPermission` (or its sibling `requireProjectMembership`) on the server BEFORE the operation runs. UI guards remain a UX convenience.
+- **Non-member projects don't leak.** `GET /api/projects` filters by `isProjectVisibleTo`; `GET /api/projects/[id]` returns 403 with a uniform shape so an outsider can't even confirm a project exists.
+- **Body actor_id spoofing remains rejected (3I invariant).** The membership check fires AFTER the body.actor_id rejection but on top of it — three independent layers (cookie → membership → core role) must all pass.
+- **Adding a new permission or role is a one-file change.** The matrix is the single source of truth. Forgetting to wire a new permission fails closed at runtime AND fails the test suite (the matrix test asserts the exhaustive truth table).
+- **Auto-membership preserves single-actor demos.** Every existing test that ran as `lawyer_kim` keeps working because Kim is auto-granted `owner_lawyer` at creation. Multi-actor specs needed one explicit membership grant call before secondary actors could act.
+- **NOT production RBAC.** Still missing: organization-level multi-tenancy, group sync (SCIM / Workday / Azure AD), per-jurisdiction policy, per-record ACLs, time-bounded delegations, role inheritance, fine-grained content sensitivity (PII / privileged-communication tagging). Production deployment must layer real OAuth/SSO + group-derived membership + jurisdiction-aware policy on top — post-Alpha. ADR-019 is a MINIMAL seam, not the final model.
+- **No new dependencies.** Membership ids come from `node:crypto.randomUUID`. No `casl`, `accesscontrol`, `oso`, or policy-engine package added.
+- **Server-store remains the integration point.** The two new helpers (`addMembershipToProject`, `disableMembershipInProject`) live next to `applyOperationToStore` and use the same persistence adapter, the same audit-log append path, and the same idempotency semantics. A future Postgres-backed membership index reuses the same helper surface.

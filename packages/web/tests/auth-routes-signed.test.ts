@@ -433,15 +433,26 @@ describe("POST /api/projects/[id]/operations (signed_cookie mode)", () => {
     }
     await walk(kimCookie, { name: "draft_deal_memo", args: {} });
 
-    // Switch to a signed business_choi session → server-side role guard fires.
+    // Switch to a signed business_choi session → membership boundary
+    // fires first (Choi has no project membership). Milestone 3L:
+    // 403 PROJECT_ACCESS_DENIED replaces the old 422 OPERATION_REJECTED
+    // here because the rejection now happens BEFORE the dispatcher
+    // reaches the core role guard.
     const refused = await walk(sessionCookieFor(CHOI.id), {
       name: "approve_deal_memo",
       args: {},
     });
-    expect(refused.status).toBe(422);
+    expect(refused.status).toBe(403);
     const refusedBody = await readJson<{ code: string; error: string }>(refused);
-    expect(refusedBody.code).toBe("OPERATION_REJECTED");
-    expect(refusedBody.error.toLowerCase()).toMatch(/lawyer/);
+    expect(refusedBody.code).toBe("PROJECT_ACCESS_DENIED");
+
+    // Grant PARK an owner_lawyer membership so PARK can act.
+    const { addMembershipToProject } = await import("../lib/server-store");
+    await addMembershipToProject(
+      id,
+      { actor: PARK, project_role: "owner_lawyer" },
+      KIM,
+    );
 
     // Signed-in lawyer_park succeeds; AuditLog records park.
     const ok = await walk(sessionCookieFor(PARK.id), {
