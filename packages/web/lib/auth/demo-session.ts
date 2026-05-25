@@ -65,6 +65,7 @@ export class DemoSessionAuthProvider implements AuthSessionResolver {
       // the route turns this into a 401 + clears the cookie.
       throw new InvalidSessionError(
         `cookie ${DEMO_SESSION_COOKIE_NAME}="${rawActorId}" does not name a known actor`,
+        "UNKNOWN_ACTOR_COOKIE",
       );
     }
     return { actor, source: "demo_cookie" };

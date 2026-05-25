@@ -42,7 +42,10 @@ export class SignedCookieAuthProvider implements AuthSessionResolver {
     if (!config.sessionSecret) {
       // Defensive — `readAuthConfig` rejects this combination at boot,
       // so reaching this branch means a test/dev override bypassed it.
-      throw new InvalidSessionError("AUTH_SESSION_SECRET is not configured");
+      throw new InvalidSessionError(
+        "AUTH_SESSION_SECRET is not configured",
+        "MISSING_SECRET",
+      );
     }
     const cookieHeader = request.headers.get("cookie");
     const token = parseCookieHeader(cookieHeader, config.cookieName);
@@ -53,18 +56,23 @@ export class SignedCookieAuthProvider implements AuthSessionResolver {
       payload = verifySessionToken(token, config.sessionSecret);
     } catch (err) {
       const code = err instanceof TokenError ? err.code : "UNKNOWN";
-      throw new InvalidSessionError(`signed session cookie rejected (${code})`);
+      throw new InvalidSessionError(
+        `signed session cookie rejected (${code})`,
+        code,
+      );
     }
 
     const user = await getUserStore().getUserById(payload.user_id);
     if (!user) {
       throw new InvalidSessionError(
         `signed session user_id="${payload.user_id}" not found`,
+        "UNKNOWN_USER",
       );
     }
     if (user.disabled_at) {
       throw new InvalidSessionError(
         `signed session user "${user.id}" is disabled (since ${user.disabled_at})`,
+        "DISABLED_USER",
       );
     }
 
@@ -77,6 +85,6 @@ export class SignedCookieAuthProvider implements AuthSessionResolver {
     // Signed-cookie mode has NO default. A missing cookie is a real
     // auth failure — the route handler turns this into a 401 so the
     // client can render a login form.
-    throw new InvalidSessionError("no session cookie present");
+    throw new InvalidSessionError("no session cookie present", "NO_COOKIE");
   }
 }

@@ -1,6 +1,6 @@
 /**
  * GET /api/auth/session — return the auth state of the current request
- * (Milestones 3I + 3J).
+ * (Milestones 3I + 3J + 3K).
  *
  * Response shape (both modes):
  *
@@ -12,35 +12,38 @@
  *     source:        "demo_cookie" | "demo_default" | "signed_cookie" | null
  *   }
  *
- * Behavior summary:
- *
- *   demo mode:
- *     - valid cookie → 200 { authenticated: true, actor, source: "demo_cookie" }
- *     - no cookie    → 200 { authenticated: false, actor: lawyer_kim, source: "demo_default" }
- *     - bad cookie   → 401 { code: "INVALID_SESSION" } + Set-Cookie clear
- *
- *   signed_cookie mode:
- *     - valid token  → 200 { authenticated: true, actor, source: "signed_cookie" }
- *     - no cookie    → 200 { authenticated: false, actor: null, source: null }
- *     - bad/expired  → 401 { code: "INVALID_SESSION" } + Set-Cookie clear
- *
- * The client uses `auth_mode` + `demo_enabled` to decide whether to
- * render the demo actor dropdown or the login form. `authenticated`
- * tells it which page-level UI (anonymous landing vs. signed-in
- * workspace) to render even before the actor is non-null.
+ * Auth event emission (Milestone 3K):
+ *   - 200 success paths emit NO event — too noisy (every page mount
+ *     hits this route).
+ *   - 401 INVALID_SESSION paths emit one of:
+ *       session_expired   — cause_code === "EXPIRED"
+ *       session_tampered  — cause_code === "INVALID_SIGNATURE"
+ *       session_invalid   — everything else (malformed payload,
+ *                            unknown user, disabled user, junk demo
+ *                            cookie, missing secret)
+ *     None of these events carry the cookie value or the signing
+ *     secret — just the `cause_code` from `InvalidSessionError`.
  */
 import { NextResponse } from "next/server";
 import {
   DEMO_SESSION_COOKIE_NAME,
+  extractRequestContext,
   getAuthConfig,
   getAuthSessionResolver,
+  recordAuthEvent,
+  type AuthEventType,
 } from "@/lib/auth";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-/** See `app/api/auth/session/route.ts` for why we match by code, not instanceof. */
-function isInvalidSession(err: unknown): err is { message: string; code: "INVALID_SESSION" } {
+interface InvalidSessionShape {
+  message: string;
+  code: "INVALID_SESSION";
+  cause_code?: string;
+}
+
+function isInvalidSession(err: unknown): err is InvalidSessionShape {
   return (
     typeof err === "object" &&
     err !== null &&
@@ -48,14 +51,18 @@ function isInvalidSession(err: unknown): err is { message: string; code: "INVALI
   );
 }
 
+/** Map InvalidSessionError.cause_code → AuthEventType. */
+function eventTypeFromCause(causeCode: string | undefined): AuthEventType {
+  if (causeCode === "EXPIRED") return "session_expired";
+  if (causeCode === "INVALID_SIGNATURE") return "session_tampered";
+  return "session_invalid";
+}
+
 export async function GET(request: Request) {
   const config = getAuthConfig();
   const resolver = getAuthSessionResolver();
+  const requestContext = extractRequestContext(request);
 
-  // Step 1: probe the resolver. resolveSession returns null on "no
-  // credentials at all" and throws InvalidSessionError on "credentials
-  // present but bad" — the bad-cookie branch needs to clear the cookie
-  // regardless of mode.
   try {
     const session = await resolver.resolveSession(request);
     if (session) {
@@ -69,19 +76,15 @@ export async function GET(request: Request) {
     }
     // No credentials.
     if (config.mode === "demo") {
-      // 3I behavior — demo mode always has a default actor.
       const def = await resolver.resolveActor(request);
       return NextResponse.json({
         auth_mode: "demo",
         demo_enabled: config.demoEnabled,
-        // Cookie-less demo requests are technically anonymous, but a
-        // demo actor is still provided so existing pages render.
         authenticated: false,
         actor: def.actor,
         source: def.source,
       });
     }
-    // signed_cookie + no cookie = anonymous; the UI shows a login form.
     return NextResponse.json({
       auth_mode: "signed_cookie",
       demo_enabled: config.demoEnabled,
@@ -91,6 +94,16 @@ export async function GET(request: Request) {
     });
   } catch (err) {
     if (isInvalidSession(err)) {
+      const causeCode = err.cause_code ?? "UNKNOWN";
+      await recordAuthEvent({
+        event_type: eventTypeFromCause(err.cause_code),
+        actor_id: null,
+        user_id: null,
+        email: null,
+        request_context: requestContext,
+        result: "failure",
+        reason_code: causeCode,
+      });
       const res = NextResponse.json(
         {
           auth_mode: config.mode,
@@ -100,7 +113,6 @@ export async function GET(request: Request) {
         },
         { status: 401 },
       );
-      // Clear whichever cookie is in use, plus the demo cookie (defensive).
       res.cookies.set(config.cookieName, "", { path: "/", maxAge: 0 });
       if (config.cookieName !== DEMO_SESSION_COOKIE_NAME) {
         res.cookies.set(DEMO_SESSION_COOKIE_NAME, "", { path: "/", maxAge: 0 });

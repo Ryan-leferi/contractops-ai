@@ -66,3 +66,20 @@ export {
   createSessionToken,
   verifySessionToken,
 } from "./signed-token";
+
+// ── Milestone 3K: auth event log ──
+
+export {
+  type AuthEvent,
+  type AuthEventRequestContext,
+  type AuthEventStore,
+  type AuthEventType,
+  type NewAuthEventInput,
+  AuthEventAppendOnlyViolationError,
+  MemoryAuthEventStore,
+  __resetAuthEventStoreForTests,
+  extractRequestContext,
+  getAuthEventStore,
+  normalizeEmailForEvent,
+  recordAuthEvent,
+} from "./auth-events";
