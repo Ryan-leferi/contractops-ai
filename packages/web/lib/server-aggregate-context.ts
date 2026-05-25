@@ -76,15 +76,34 @@ export function buildServerAggregateContext(
   /**
    * Per-role real-mode gating.
    *
-   *   deal_memo_drafter    — 2C wiring; gated by provider allowlist only
-   *                           (REAL_LLM_ROLE_ALLOWLIST is NOT required to
-   *                           preserve backward compatibility with
-   *                           existing deployments).
-   *   counterparty_reviewer — 2E wiring; same backward-compat policy.
-   *   contract_drafter      — 4A wiring; REQUIRES role on
-   *                           REAL_LLM_ROLE_ALLOWLIST. Mock by default
-   *                           even when USE_REAL_LLM=true.
-   *   revision_agent        — 4A wiring; same as contract_drafter.
+   *   deal_memo_drafter           — 2C wiring; gated by provider allowlist
+   *                                  ONLY. REAL_LLM_ROLE_ALLOWLIST is not
+   *                                  required, to preserve backward
+   *                                  compatibility with existing
+   *                                  deployments that already configure
+   *                                  USE_REAL_LLM=true for Deal Memo.
+   *   contract_drafter            — 4A wiring; requires role on
+   *                                  REAL_LLM_ROLE_ALLOWLIST AND openai on
+   *                                  provider allowlist. Mock by default
+   *                                  even when USE_REAL_LLM=true.
+   *   revision_agent              — 4A wiring; same as contract_drafter.
+   *   counterparty_reviewer       — 4B wiring (BREAKING vs 2E): now
+   *                                  requires role on REAL_LLM_ROLE_ALLOWLIST
+   *                                  AND anthropic on provider allowlist.
+   *                                  Existing 2E deployments must add
+   *                                  `counterparty_reviewer` to
+   *                                  REAL_LLM_ROLE_ALLOWLIST to keep real
+   *                                  mode. Documented in ADR-021.
+   *   source_consistency_reviewer — 4B wiring; requires role on
+   *                                  REAL_LLM_ROLE_ALLOWLIST AND openai on
+   *                                  provider allowlist. Gemini is NOT
+   *                                  implemented in Alpha v0.1; remains
+   *                                  post-alpha.
+   *   legal_style_reviewer        — 4B wiring; same as source_consistency
+   *                                  (OpenAI + role allowlist). Output
+   *                                  schema is the same `IssueCardListOutput`,
+   *                                  so risk profile matches the other
+   *                                  reviewers — included.
    *
    * Any other role is mock-only.
    */
@@ -94,11 +113,7 @@ export function buildServerAggregateContext(
       if (role === "deal_memo_drafter" && providerAllowlist.includes("openai")) {
         return core.selectProviderByName("openai", envConfig);
       }
-      if (role === "counterparty_reviewer" && providerAllowlist.includes("anthropic")) {
-        return core.selectProviderByName("anthropic", envConfig);
-      }
-      // Milestone 4A: new roles require explicit REAL_LLM_ROLE_ALLOWLIST
-      // entry on top of USE_REAL_LLM + LLM_PROVIDER_ALLOWLIST.
+      // Milestone 4A roles — explicit role allowlist required.
       if (
         role === "contract_drafter" &&
         roleAllowlist.includes("contract_drafter") &&
@@ -109,6 +124,31 @@ export function buildServerAggregateContext(
       if (
         role === "revision_agent" &&
         roleAllowlist.includes("revision_agent") &&
+        providerAllowlist.includes("openai")
+      ) {
+        return core.selectProviderByName("openai", envConfig);
+      }
+      // Milestone 4B review roles — explicit role allowlist required.
+      // counterparty_reviewer's 2E backward-compat is INTENTIONALLY
+      // broken here per the 4B spec (see ADR-021); old deployments add
+      // the role to REAL_LLM_ROLE_ALLOWLIST to keep real mode.
+      if (
+        role === "counterparty_reviewer" &&
+        roleAllowlist.includes("counterparty_reviewer") &&
+        providerAllowlist.includes("anthropic")
+      ) {
+        return core.selectProviderByName("anthropic", envConfig);
+      }
+      if (
+        role === "source_consistency_reviewer" &&
+        roleAllowlist.includes("source_consistency_reviewer") &&
+        providerAllowlist.includes("openai")
+      ) {
+        return core.selectProviderByName("openai", envConfig);
+      }
+      if (
+        role === "legal_style_reviewer" &&
+        roleAllowlist.includes("legal_style_reviewer") &&
         providerAllowlist.includes("openai")
       ) {
         return core.selectProviderByName("openai", envConfig);

@@ -192,7 +192,7 @@ describe("4A — REAL_LLM_ROLE_ALLOWLIST gates contract_drafter + revision_agent
 // Backward compat — 2C deal_memo_drafter + 2E counterparty_reviewer
 // ─────────────────────────────────────────────────────────────────────
 
-describe("Backward compat — 2C/2E roles do NOT require REAL_LLM_ROLE_ALLOWLIST", () => {
+describe("Backward compat — deal_memo_drafter (2C) does NOT require REAL_LLM_ROLE_ALLOWLIST", () => {
   it("deal_memo_drafter goes real with just openai on provider allowlist (no role allowlist needed)", () => {
     process.env.USE_REAL_LLM = "true";
     process.env.LLM_PROVIDER_ALLOWLIST = "openai";
@@ -204,13 +204,15 @@ describe("Backward compat — 2C/2E roles do NOT require REAL_LLM_ROLE_ALLOWLIST
     expect(p.provider_id).toBe("openai");
   });
 
-  it("counterparty_reviewer goes real with just anthropic on provider allowlist", () => {
+  // Milestone 4B BREAKING change vs 2E: counterparty_reviewer now requires
+  // a REAL_LLM_ROLE_ALLOWLIST entry (see ADR-021). Existing 2E deployments
+  // that flipped USE_REAL_LLM=true for the counterparty reviewer must add
+  // `counterparty_reviewer` to the role allowlist to keep real mode.
+  it("counterparty_reviewer is MOCK without REAL_LLM_ROLE_ALLOWLIST (4B change)", () => {
     process.env.USE_REAL_LLM = "true";
     process.env.LLM_PROVIDER_ALLOWLIST = "anthropic";
     process.env.ANTHROPIC_API_KEY = FAKE_ANTHROPIC_KEY;
     const ctx = buildServerAggregateContext(makeState(), ACTOR);
-    const p = ctx.getProvider!("counterparty_reviewer");
-    expect(p.mode).toBe("real");
-    expect(p.provider_id).toBe("anthropic");
+    expect(ctx.getProvider!("counterparty_reviewer").mode).toBe("mock");
   });
 });
