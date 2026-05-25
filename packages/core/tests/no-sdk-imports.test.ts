@@ -11,6 +11,7 @@ import { selectProvider } from "@contractops/core";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const CORE_SRC = resolve(__dirname, "../src");
 const WEB_SRC = resolve(__dirname, "../../web");
+const WEB_LIB = resolve(WEB_SRC, "lib");
 
 /**
  * Real-LLM SDK imports are tightly scoped:
@@ -191,6 +192,53 @@ describe("Real LLM SDK imports are tightly scoped (Milestone 2E)", () => {
    *
    * Allowlist: any file whose path lives under `packages/web/app/api/`.
    */
+  /**
+   * Milestone 3H — `pg` is the PostgreSQL client. It is heavy and
+   * Node-only; the client webpack alias has `pg: false` and the
+   * server `experimental.serverComponentsExternalPackages` keeps it
+   * out of the inlined server bundle. Code-side, only one file in
+   * the repo is allowed to import it: the PostgreSQL persistence
+   * adapter. Everything else must go through the `PgPoolLike` /
+   * `PersistenceAdapter` interfaces.
+   */
+  it("pg is only imported from packages/web/lib/persistence/postgres-adapter.ts (Milestone 3H)", () => {
+    const allowedFile = resolve(WEB_LIB, "persistence/postgres-adapter.ts");
+    const patterns: { pattern: RegExp; name: string }[] = [
+      { pattern: /from\s+["']pg["']/, name: "pg" },
+      { pattern: /require\s*\(\s*["']pg["']\s*\)/, name: "require('pg')" },
+    ];
+    const files = [...walkTsFiles(CORE_SRC), ...walkTsFiles(WEB_SRC)];
+    const violations: { file: string; line: number; name: string; text: string }[] = [];
+    for (const file of files) {
+      if (file.includes("e2e") || file.includes("node_modules") || file.includes(".next")) continue;
+      if (resolve(file) === allowedFile) continue;
+      const lines = readFileSync(file, "utf-8").split("\n");
+      lines.forEach((line, i) => {
+        for (const { pattern, name } of patterns) {
+          if (pattern.test(line)) {
+            violations.push({
+              file: file
+                .replace(WEB_SRC, "packages/web")
+                .replace(CORE_SRC, "packages/core/src"),
+              line: i + 1,
+              name,
+              text: line.trim(),
+            });
+          }
+        }
+      });
+    }
+    if (violations.length > 0) {
+      const msg = violations
+        .map((v) => `  ${v.file}:${v.line} [${v.name}] ${v.text}`)
+        .join("\n");
+      throw new Error(
+        `pg imported outside packages/web/lib/persistence/postgres-adapter.ts:\n${msg}`,
+      );
+    }
+    expect(violations).toEqual([]);
+  });
+
   it("packages/web/* — @contractops/core/export-renderer is server-only (API routes)", () => {
     const files = walkTsFiles(WEB_SRC);
     const subpathPattern = /from\s+["']@contractops\/core\/export-renderer["']/;

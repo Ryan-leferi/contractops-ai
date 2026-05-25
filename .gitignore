@@ -48,6 +48,10 @@ playwright-report/
 .env.*
 !.env.example
 
+# TypeScript incremental build info
+*.tsbuildinfo
+**/*.tsbuildinfo
+
 # OS
 .DS_Store
 Thumbs.db

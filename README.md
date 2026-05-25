@@ -231,16 +231,17 @@ The registry resolution is intentionally the single chokepoint. A future milesto
 
 Until then: production deployment **still requires real authentication and authorization**; this milestone is multi-user *demo* only.
 
-## Persistence (Milestones 3D + 3E)
+## Persistence (Milestones 3D + 3E + 3H)
 
-State for the web app — `ProjectState`, `AuditLog`, `IssueDecisionHistoryEntry` — flows through a single `PersistenceAdapter` interface (`packages/web/lib/persistence/`). Two adapters ship:
+State for the web app — `ProjectState`, `AuditLog`, `IssueDecisionHistoryEntry` — flows through a single `PersistenceAdapter` interface (`packages/web/lib/persistence/`). Three adapters ship:
 
 | `PERSISTENCE_DRIVER` | Adapter | Default? | Used for |
 |---|---|---|---|
-| `memory` (or unset) | `MemoryPersistenceAdapter` — `globalThis`-pinned `Map` | ✅ default | CI, the mock-mode `npm run dev` flow, every Vitest / Playwright test that doesn't explicitly enable the file adapter |
+| `memory` (or unset) | `MemoryPersistenceAdapter` — `globalThis`-pinned `Map` | ✅ default | CI, the mock-mode `npm run dev` flow, every Vitest / Playwright test that doesn't explicitly enable a durable adapter |
 | `file` | `FilePersistenceAdapter` — JSON snapshot + JSONL journals under `PERSISTENCE_FILE_PATH` (default `./.contractops-data/`) | opt-in | Local dev/demo runs where you want state to survive a server restart |
+| `postgres` | `PostgresPersistenceAdapter` — JSONB tables in a real PostgreSQL instance | opt-in | Durable, multi-process dev/staging. Production deployment still needs real authentication + project-level authorization on top (see ADR-015). |
 
-Any other value (including `sqlite`, reserved for a future adapter) throws `UnknownPersistenceDriverError` at boot. **There is no silent fallback** — switching storage is always deliberate.
+Any other value (including `sqlite`, reserved for a future adapter) throws `UnknownPersistenceDriverError` at boot. `postgres` without `DATABASE_URL` throws `PostgresConfigError`. **There is no silent fallback** — switching storage is always deliberate.
 
 ### Memory mode (default)
 
@@ -273,11 +274,34 @@ Layout under `PERSISTENCE_FILE_PATH/projects/`:
 - Generated `.docx` and `_cover_email.md` binaries are **never** written into persistence; `ExportFile.content` is a text summary. The on-disk file layout is gitignored (`.contractops-data/`, `*.db`, `*.sqlite*`) and `npm run repo:hygiene` refuses to allow them tracked.
 - Append-only is enforced at the adapter level: a duplicate audit or decision-history id throws `AppendOnlyViolationError` before any disk write.
 
-### Future PostgreSQL migration
+### PostgreSQL mode (Milestone 3H)
 
-The next milestone replaces `lib/persistence/file-adapter.ts` with a real database-backed adapter (PostgreSQL or similar). Because every callsite goes through the `PersistenceAdapter` interface, the swap is a one-file addition plus an env-var rename — no API routes, page code, or aggregate logic need to move.
+```bash
+PERSISTENCE_DRIVER=postgres \
+DATABASE_URL=postgres://user:pass@host:5432/dbname \
+POSTGRES_SSL=false \
+  npm run dev -w @contractops/web
+```
 
-### Optional durable E2E
+On first read or write the adapter bootstraps four tables (idempotent `CREATE TABLE IF NOT EXISTS`):
+
+```
+contractops_projects                 — id PK, name, status, created_at
+contractops_project_states           — project_id PK FK, state JSONB (latest snapshot)
+contractops_audit_logs               — id PK, project_id FK, entry JSONB (append-only)
+contractops_issue_decision_history   — id PK, project_id FK, entry JSONB (append-only)
+```
+
+No migration framework, no ORM — just `pg` and a handful of parameterized statements. `createProject` and `saveProjectState` wrap multi-row writes in a transaction; `appendAuditLog` and `appendDecisionHistory` map PostgreSQL's `23505` unique-violation SQLSTATE to `AppendOnlyViolationError` so the append-only contract is identical across all three adapters.
+
+**Still NOT production-grade — Postgres fixes durability and concurrency, not identity:**
+
+- No authentication, no project-level RBAC, no row-level security. The adapter is reachable by anyone who can reach the Next.js process; deployment must front it with real auth (ADR-015).
+- Real confidential source documents MUST NOT be saved into the database — only synthetic / sanitized text belongs here (PLATFORM_BRIEF.md §10, §12 rule 6).
+- Generated `.docx` and `_cover_email.md` binaries are **never** written into persistence; `ExportFile.content` is a text summary stored inside the JSONB ProjectState column.
+- `pg` is server-only. The Next webpack config aliases it to `false` in the client bundle and lists it under `experimental.serverComponentsExternalPackages`; the `no-sdk-imports` test refuses any `import "pg"` outside `lib/persistence/postgres-adapter.ts`.
+
+### Optional durable E2E (file adapter)
 
 `packages/web/e2e/durable-persistence.spec.ts` is gated by `E2E_DURABLE_PERSISTENCE=true`. CI keeps it skipped. To run locally:
 
@@ -289,6 +313,19 @@ PERSISTENCE_FILE_PATH=.tmp-e2e-data \
 ```
 
 It creates a project, walks to "issues_open", rejects an Issue Card, then opens a **fresh browser context** and verifies the project and the decision history both still exist — proving the disk-backed store survives the simulated tab-close.
+
+### Optional PostgreSQL integration test (Milestone 3H)
+
+`packages/web/tests/persistence-postgres-integration.test.ts` is gated by `POSTGRES_INTEGRATION=true`. CI keeps it skipped — the standard `npm run verify` pipeline never touches a real DB. To run locally against a disposable dev/staging instance (the test calls `resetDemoStore()` and deletes every `contractops_*` row):
+
+```bash
+POSTGRES_INTEGRATION=true \
+DATABASE_URL=postgres://user:pass@host:5432/dbname \
+POSTGRES_SSL=false \
+  npm run test -w @contractops/web -- persistence-postgres-integration
+```
+
+It walks `createProject → saveProjectState → appendAuditLog → appendDecisionHistory`, asserts append-only enforcement via real `23505` violations, opens a **fresh adapter on the same pool** (simulating a process restart) and verifies the data survives.
 
 ## Server-side in-memory store (Milestone 3D)
 
