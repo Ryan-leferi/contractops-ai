@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { waitForStoreIdle } from "./helpers";
+import { answerAllRequiredIntakeQuestions, waitForStoreIdle } from "./helpers";
 
 /**
  * Milestone 3D — multi-session demo via the server-side in-memory store.
@@ -198,15 +198,13 @@ test("final approval refuses when one browser leaves pending issues behind", asy
   await pageA.goto(`/projects/${projectId}/playbook`);
   await pageA.click('[data-testid="select-playbook-btn"]');
   await pageA.goto(`/projects/${projectId}/intake`);
-  await expect(pageA.locator('[data-testid^="intake-card-"]').first()).toBeVisible();
-  const intakeCards = pageA.locator('[data-testid^="intake-card-"]');
-  const totalIntake = await intakeCards.count();
-  for (let i = 0; i < totalIntake; i++) {
-    const card = intakeCards.nth(i);
-    await card.locator("input").fill(`a${i + 1}`);
-    await card.locator("button").click();
-  }
-  await expect(pageA.getByTestId("intake-progress")).toContainText("all required answered");
+  // Helper gates each save on `waitForStoreIdle` — required because
+  // the 3D StoreProvider made `applyProjectOp` async. The tight
+  // fill→click loop without per-save gating drops answers on slow
+  // CI runners (observed in GitHub Actions as
+  // "3/4 answered · 1 required missing"). Same fix already applied
+  // to lawyer-ui-guards.spec.ts.
+  await answerAllRequiredIntakeQuestions(pageA);
   await pageA.goto(`/projects/${projectId}/deal-memo`);
   await pageA.click('[data-testid="generate-deal-memo-btn"]');
   await expect(pageA.getByTestId("deal-memo-status")).toHaveText("Drafted");
