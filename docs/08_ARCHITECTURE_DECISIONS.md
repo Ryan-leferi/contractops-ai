@@ -326,3 +326,64 @@ Test infrastructure:
 - **Migration path is explicit.** 3K = OAuth / SSO provider (third `AuthSessionResolver`). 3L = per-project assignment + production RBAC. 3M = auth-event audit. 3N = hardening (rate limiting, MFA, password reset, CSRF tokens on logout). Each step adds capability without disturbing the already-shipped layers.
 - **No new npm dependencies.** All crypto comes from Node's stdlib (`crypto.pbkdf2`, `crypto.createHmac`, `crypto.randomBytes`, `crypto.timingSafeEqual`). No `bcrypt`, `argon2`, `iron-session`, `jose`, `jsonwebtoken`, or `next-auth` was added. When a future milestone needs interoperability with another service or a hardened deployment, it will pull in exactly the deps it needs — not before.
 - **No real users or real passwords in the repo.** The seeded users use the IANA-reserved `example.test` TLD (RFC 6761 §6.4) so the addresses can never reach a real mailbox. The seeding password is the obvious literal `"demo-password"`. `repo:hygiene` continues to refuse any committed secret pattern.
+
+---
+
+## ADR-018 — Append-only auth/security event log (Milestone 3K)
+
+**Source:** Milestone 3K scope; ADR-016 (auth boundary); ADR-017 (signed-cookie + user store).
+
+**Decision:** Introduce a SEPARATE append-only event log, `AuthEventStore`, that records authentication-layer transitions emitted by the 3I + 3J routes. It lives BESIDE `AuditLog` (which records workflow actions) — the two never share storage. The default implementation is `MemoryAuthEventStore` (in-process map); production replaces this with a real SIEM forwarder behind the same `AuthEventStore` interface.
+
+Event types (closed set):
+
+```
+login_success
+login_failed
+logout
+session_invalid
+session_expired
+session_tampered
+demo_actor_switch
+demo_auth_forbidden
+```
+
+Adding a new variant requires (a) extending the union in `lib/auth/auth-events.ts`, (b) adding the emit call from a route, (c) extending `tests/auth-events-routes.test.ts`. Tests fail loudly if a route emits a type that isn't in the union.
+
+Schema (per event):
+
+```
+id              ae_<uuid>
+event_type      one of the eight above
+actor_id        resolved actor id; null pre-auth
+user_id         signed-cookie user id; null in demo mode
+email           normalized (lowercased + trimmed); set on login_*; null otherwise
+occurred_at     ISO 8601
+request_context { user_agent, ip, path, method } — all bounded, all nullable
+result          "success" | "failure"
+reason_code     short machine-readable, mirrors route response.code when one exists
+metadata        bounded extras — NEVER passwords, tokens, secrets, cookies
+```
+
+Privacy design:
+
+- **The route never passes the password to the recorder.** The login route handler holds the plaintext password just long enough to call `verifyPassword`; the recorder gets `metadata.detail` only (`UNKNOWN_EMAIL` / `WRONG_PASSWORD` / `DISABLED_USER`).
+- **The route never passes the signed token to the recorder.** The session route handler catches `InvalidSessionError`, extracts the `cause_code` (`EXPIRED` / `INVALID_SIGNATURE` / `INVALID_TOKEN_SHAPE` / `UNKNOWN_USER` / `DISABLED_USER` / `UNKNOWN_ACTOR_COOKIE`), and emits the corresponding event with `reason_code = cause_code`. The cookie value itself is never read by the recorder.
+- **The recorder defensively rejects forbidden metadata keys.** `FORBIDDEN_METADATA_KEYS = { password, password_hash, token, session_token, signature, cookie, secret, session_secret, auth_session_secret, api_key }` — any match (case-insensitive) makes the recorder drop the entire event with a console error. A route that accidentally tries to log a password records nothing at all, which is preferable to leaking one.
+- **The privacy sweep test runs an end-to-end check.** After a failed-login → successful-login → logout cycle, `tests/auth-events-routes.test.ts` greps the entire event JSON for the test password, the wrong-password attempt, the signed token value, and the signing secret — all four MUST be absent.
+- **Generic client error preserved.** All three `login_failed` branches return `{ code: "INVALID_CREDENTIALS", error: "invalid email or password" }`. The email-enumeration leak is in the EVENT LOG (which is internal, dev-gated), never in the response.
+
+Dev inspect route: `GET /api/auth/events` is gated by `AUTH_EVENTS_INSPECT=true`. CI never sets the gate; the gated `signed-auth-events.spec.ts` Playwright spec is the only thing that flips it. The route has NO auth check beyond the env gate — it's a developer / E2E affordance, not a production admin API. Production deployment forwards events to a real SIEM and exposes them through that SIEM's UI.
+
+Storage seam: `AuthEventStore` interface mirrors the established `PersistenceAdapter` pattern (driver-tagged, factory + `__resetForTests` helper). A future milestone replaces `MemoryAuthEventStore` with a file / Postgres / SIEM-forwarding implementation without touching any route handler or recorder.
+
+**Consequence:**
+
+- **Traceability without storage commitment.** Every auth transition is captured before a real SIEM is wired in. The shape of the event log is stable; switching the backend is a one-file change.
+- **`npm run verify` is unchanged.** Memory store is the default; no new env vars are required in demo mode. The new test files (`auth-events.test.ts` + `auth-events-routes.test.ts`) run as part of the standard CI pipeline and add 38 cases. The gated `signed-auth-events.spec.ts` is skipped by default.
+- **The login route does NOT regress its generic-error behavior.** Tests assert both the client-visible `INVALID_CREDENTIALS` AND the internal `metadata.detail` distinction. A future client regression that tried to leak the internal detail would fail both.
+- **Multi-layer defense against password / token logging.** Three independent guards: (1) routes never pass secrets to the recorder; (2) the recorder rejects forbidden metadata keys; (3) the privacy sweep test catches anything the first two miss.
+- **Auth events do NOT contaminate workflow `AuditLog`.** A future workflow audit reader (3M / 3N) won't see `login_success` events and won't have to filter them out; conversely the auth event log doesn't grow with workflow noise.
+- **Append-only contract identical to other journals.** `AuthEventAppendOnlyViolationError` mirrors `AppendOnlyViolationError` on the persistence adapter — same semantics, same enforcement pattern.
+- **NOT a production SIEM.** Still missing: real backend, alerting (e.g. on `login_failed` rate spikes per IP), retention policy, tamper-evident storage, integration with incident-response tooling. ADR-018 is the SEAM; the SIEM integration is a future milestone. Production deployment **still requires** a real security monitoring pipeline.
+- **No new dependencies.** UUID v4 from `node:crypto.randomUUID`. No `winston`, `pino`, `bunyan`, or `@datadog/*` package added. The future SIEM-forwarder milestone pulls in exactly what the chosen backend needs.

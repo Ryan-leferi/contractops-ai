@@ -113,7 +113,29 @@ export interface AuthSessionResolver {
  */
 export class InvalidSessionError extends Error {
   readonly code = "INVALID_SESSION";
-  constructor(public readonly reason: string) {
+  /**
+   * Sub-classification of WHY the session was rejected. Lets the
+   * session route map the rejection onto a specific auth event type
+   * (Milestone 3K — `session_expired` vs `session_tampered` vs
+   * `session_invalid`) without parsing the human-readable `reason`
+   * string. Optional so callers from 3I that didn't supply it stay
+   * compatible.
+   *
+   *   "EXPIRED"            — signed cookie past its expires_at
+   *   "INVALID_SIGNATURE"  — HMAC mismatch (tampered)
+   *   "INVALID_TOKEN_SHAPE" / "INVALID_PAYLOAD" — malformed token
+   *   "UNKNOWN_USER"       — signed token resolved a user_id the
+   *                          store doesn't have
+   *   "DISABLED_USER"      — user.disabled_at is non-null
+   *   "UNKNOWN_ACTOR_COOKIE" — demo cookie value isn't in the registry
+   *   "MISSING_SECRET"     — defensive: AUTH_SESSION_SECRET missing
+   *                          in signed_cookie mode (boot guard should
+   *                          have caught this)
+   */
+  constructor(
+    public readonly reason: string,
+    public readonly cause_code?: string,
+  ) {
     super(`invalid session: ${reason}`);
   }
 }

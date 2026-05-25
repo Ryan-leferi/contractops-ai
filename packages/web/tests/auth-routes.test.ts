@@ -164,7 +164,9 @@ describe("POST /api/auth/demo/actor", () => {
 
 describe("DELETE /api/auth/demo/actor", () => {
   it("clears the cookie and returns the demo default", async () => {
-    const res = await authDemoActorDELETE();
+    const res = await authDemoActorDELETE(
+      buildRequest({ url: "http://x/api/auth/demo/actor", method: "DELETE" }),
+    );
     expect(res.status).toBe(200);
     const body = await readJson<{ actor: { id: string }; source: string }>(res);
     expect(body.actor.id).toBe(KIM.id);

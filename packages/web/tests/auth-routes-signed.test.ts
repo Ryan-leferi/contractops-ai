@@ -233,7 +233,9 @@ describe("POST /api/auth/login (signed_cookie mode)", () => {
 
 describe("POST /api/auth/logout", () => {
   it("clears both contractops_session and contractops_demo_actor", async () => {
-    const res = await authLogoutPOST();
+    const res = await authLogoutPOST(
+      buildRequest({ url: "http://x/api/auth/logout", method: "POST" }),
+    );
     expect(res.status).toBe(200);
     const signedClear = extractCookie(res, "contractops_session");
     expect(signedClear).not.toBeNull();

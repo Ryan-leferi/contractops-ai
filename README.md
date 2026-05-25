@@ -253,6 +253,7 @@ The boundary is `AuthSessionResolver` in `lib/auth/types.ts`. 3I shipped `DemoSe
 | `/api/auth/login` | `POST` | **Signed-cookie mode only.** Body `{ email, password }` → 200 + Set-Cookie signed session, or 401 `INVALID_CREDENTIALS` (generic — no email-enumeration leak). Refused in demo mode with 400 `AUTH_MODE_MISMATCH`. |
 | `/api/auth/logout` | `POST` | Clears both the signed cookie AND the demo cookie defensively. |
 | `/api/auth/dev/seed` | `POST` | **Dev-only.** Gated by `E2E_SIGNED_AUTH=true`. Seeds the three sanitized demo users (`example.test` emails) for the gated Playwright spec. 403 in normal operation. |
+| `/api/auth/events` | `GET` | **Dev-only.** Gated by `AUTH_EVENTS_INSPECT=true`. Returns the in-process auth/security event log (Milestone 3K). 403 by default. Production deployment must forward events to a real SIEM and keep this route disabled — see ADR-018. |
 
 ### Multi-actor demo
 
@@ -304,16 +305,58 @@ The spec logs in as `lawyer_kim`, walks the workflow to Issue Cards, logs out, l
 - the demo actor route returns 403 `DEMO_AUTH_DISABLED`;
 - DOCX export separation (clean / commentary) holds.
 
+### Auth / security event log (Milestone 3K)
+
+Every authentication-layer transition is now recorded into an append-only `AuthEvent` log that lives separately from `AuditLog` (which records WORKFLOW actions). The two never share storage — workflow audits are stamped with the resolved session actor, auth events describe how the session itself got resolved.
+
+Event types:
+
+| Event | Emitted when |
+|---|---|
+| `login_success` | `POST /api/auth/login` succeeds. Records `email` + `user_id`. |
+| `login_failed` | `POST /api/auth/login` returns 401. Records `email`; `user_id` only when the email matched. `metadata.detail` distinguishes `UNKNOWN_EMAIL` / `WRONG_PASSWORD` / `DISABLED_USER` (internal — the client always gets the same generic error). |
+| `logout` | `POST /api/auth/logout`. Records `actor_id` of the resolved session, or `null` if the caller had no session. |
+| `session_invalid` | `GET /api/auth/session` saw a malformed signed token, an unknown signed user, a disabled signed user, or a junk demo cookie. |
+| `session_expired` | `GET /api/auth/session` saw a signed token past its `expires_at`. |
+| `session_tampered` | `GET /api/auth/session` saw a signed token whose HMAC didn't verify. |
+| `demo_actor_switch` | `POST /api/auth/demo/actor` succeeded. `metadata.previous_actor_id` shows the cookie value before the switch. |
+| `demo_auth_forbidden` | `POST` or `DELETE /api/auth/demo/actor` returned 403 because `DEMO_AUTH_ENABLED=false` in signed-cookie mode. `metadata.attempted_actor_id` records the would-be id. |
+
+Privacy guarantees (enforced by tests):
+
+- Plaintext passwords are **never** recorded — the route never passes them to the recorder, and `recordAuthEvent` defensively rejects any metadata key matching `password` / `token` / `signature` / `secret` / `cookie` / `api_key` / etc.
+- Signed session tokens are **never** recorded — only the failure `cause_code` (`EXPIRED` / `INVALID_SIGNATURE` / `INVALID_TOKEN_SHAPE` / …).
+- `tests/auth-events-routes.test.ts` runs a privacy sweep: after a full failed-login → successful-login → logout cycle, the entire event JSON is grepped for the test password, the wrong-password attempt, the signed token, and the signing secret — all four must be absent.
+- The dev inspect route `GET /api/auth/events` (gated by `AUTH_EVENTS_INSPECT=true`) carries the same guarantees because the underlying store does.
+
+Storage: `MemoryAuthEventStore` keeps events in process memory, restart wipes them. Append-only — duplicate id throws `AuthEventAppendOnlyViolationError`.
+
+> **⚠ NOT A PRODUCTION SIEM.** No alerting, no retention policy, no tamper-evident storage, no forwarding to a real security backend. The 3K event log is the SEAM (the route handlers + recorder + store interface) that a future milestone replaces with a real SIEM integration. Do NOT rely on this for compliance or incident response.
+
+### Gated signed-auth-events E2E (Milestone 3K)
+
+`packages/web/e2e/signed-auth-events.spec.ts` is gated by `E2E_SIGNED_AUTH=true` AND `AUTH_EVENTS_INSPECT=true`. CI keeps it skipped. To run locally:
+
+```bash
+E2E_SIGNED_AUTH=true \
+AUTH_EVENTS_INSPECT=true \
+AUTH_MODE=signed_cookie \
+AUTH_SESSION_SECRET=this-is-a-32-char-test-secret-aaa \
+  npm run e2e -w @contractops/web -- signed-auth-events.spec.ts
+```
+
+Walks failed-login → successful-login → logout and verifies the dev inspect route returns the three events in order, with the right `metadata.detail` values, and zero password / token / secret leakage.
+
 ### Future path to real auth
 
-The auth boundary is intentionally the single chokepoint. 3J added the second `AuthSessionResolver` implementation; future milestones will:
+The auth boundary is intentionally the single chokepoint. 3J added the second `AuthSessionResolver` implementation; 3K added the auth-event seam. Future milestones will:
 
-1. **3K — OAuth / SSO provider integration.** Add a third `AuthSessionResolver` that exchanges authorization codes for sessions and creates / merges users on first login. Keep `signed_cookie` for password-backed accounts.
-2. **3L — Per-project assignment + production RBAC.** Add a project-membership table; gate operations on `(actor.id, project.id) ∈ membership` in addition to `actor.role === "human_lawyer"`.
-3. **3M — Audit of auth events.** Login, logout, session refresh, password change, account lockout — all should produce server-side audit entries (separate from the workflow audit log).
-4. **3N — Hardening.** Rate limiting on `/api/auth/login`, account lockout policy, MFA, password reset, email verification, CSRF tokens on logout, secret rotation with key-id support.
+1. **3L — OAuth / SSO provider integration.** Add a third `AuthSessionResolver` that exchanges authorization codes for sessions and creates / merges users on first login. Keep `signed_cookie` for password-backed accounts. Emit `oauth_login_success` / `oauth_login_failed` into the same 3K event log.
+2. **3M — Per-project assignment + production RBAC.** Add a project-membership table; gate operations on `(actor.id, project.id) ∈ membership` in addition to `actor.role === "human_lawyer"`. Emit `project_membership_changed` events.
+3. **3N — Real SIEM integration + retention.** Forward 3K events to a real backend (Datadog / Splunk / S3 + Athena / Elastic); add retention policy, tamper-evident storage, alerting on `login_failed` spikes and `session_tampered` spikes.
+4. **3O — Hardening.** Rate limiting on `/api/auth/login`, account lockout policy, MFA, password reset, email verification, CSRF tokens on logout, secret rotation with key-id support.
 
-Until then: production deployment **still requires real OAuth/SSO + RBAC + rate limiting + audit of auth events**; 3J is the seam, not the destination. See ADR-016 (boundary) + ADR-017 (signed-cookie + user store) for the full rationale.
+Until then: production deployment **still requires real OAuth/SSO + RBAC + SIEM + rate limiting + MFA**; 3J + 3K are the seams, not the destinations. See ADR-016 (boundary), ADR-017 (signed-cookie + user store), and ADR-018 (auth event log) for the full rationale.
 
 ## Persistence (Milestones 3D + 3E + 3H)
 
