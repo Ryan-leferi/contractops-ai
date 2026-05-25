@@ -37,6 +37,13 @@ export const issueCardSchema = z.object({
   recommended_action: issueRecommendedActionSchema,
   human_decision: issueHumanDecisionSchema,
   partial_note: z.string().nullable(),
+  /**
+   * Optional short rationale captured at decision time (Milestone 3C).
+   * Mirrors `partial_note` but applies to any decision outcome. Never
+   * required — the brief does not mandate it. Full change trail lives in
+   * `ProjectState.decision_history`; this field holds the LATEST note.
+   */
+  reason_note: z.string().nullable().optional(),
   decided_by: idSchema.nullable(),
   decided_at: isoDateTimeSchema.nullable(),
   applied_version: idSchema.nullable(),

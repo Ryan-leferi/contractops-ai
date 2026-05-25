@@ -2,6 +2,7 @@ import type {
   Actor,
   AuditLog,
   IssueCard,
+  IssueDecisionHistoryEntry,
   IssueHumanDecision,
   IssueLocation,
   IssueRecommendedAction,
@@ -44,6 +45,7 @@ export function createIssueCards(input: CreateIssueCardsInput): IssueCard[] {
     recommended_action: seed.recommended_action,
     human_decision: "pending",
     partial_note: null,
+    reason_note: null,
     decided_by: null,
     decided_at: null,
     applied_version: null,
@@ -57,12 +59,24 @@ export interface DecideIssueCardInput {
   decision: IssueDecisionOutcome;
   decided_by: Actor;
   partial_note?: string;
+  /**
+   * Optional short rationale (Milestone 3C). Stored on both the updated
+   * IssueCard (latest decision) and the appended IssueDecisionHistoryEntry.
+   * Never required — the brief does not mandate it.
+   */
+  reason_note?: string;
   env: Env;
 }
 
 export interface DecideIssueCardResult {
   issue_card: IssueCard;
   audit: AuditLog;
+  /**
+   * Append-only entry recording this decision change. The caller (the
+   * aggregate) is responsible for persisting it into
+   * `ProjectState.decision_history`.
+   */
+  history_entry: IssueDecisionHistoryEntry;
 }
 
 export function decideIssueCard(input: DecideIssueCardInput): DecideIssueCardResult {
@@ -75,11 +89,15 @@ export function decideIssueCard(input: DecideIssueCardInput): DecideIssueCardRes
     }
   }
   const now = input.env.now();
+  const trimmedReason = input.reason_note?.trim();
+  const reason_note = trimmedReason ? trimmedReason : null;
+  const partial_note =
+    input.decision === "partially_accepted" ? (input.partial_note ?? null) : null;
   const updated: IssueCard = {
     ...input.issue_card,
     human_decision: input.decision,
-    partial_note:
-      input.decision === "partially_accepted" ? (input.partial_note ?? null) : null,
+    partial_note,
+    reason_note,
     decided_by: input.decided_by.id,
     decided_at: now,
   };
@@ -88,8 +106,27 @@ export function decideIssueCard(input: DecideIssueCardInput): DecideIssueCardRes
     actor: input.decided_by,
     event_type: "issue_card_decided",
     ref_id: updated.issue_id,
-    payload: { decision: input.decision, partial_note: updated.partial_note },
+    payload: {
+      previous_decision: input.issue_card.human_decision,
+      decision: input.decision,
+      partial_note,
+      // Reason note is captured in the audit payload too so the audit log
+      // alone is enough for compliance review.
+      reason_note,
+    },
     env: input.env,
   });
-  return { issue_card: updated, audit };
+  const history_entry: IssueDecisionHistoryEntry = {
+    id: input.env.newId(),
+    project_id: input.issue_card.project_id,
+    issue_id: input.issue_card.issue_id,
+    previous_decision: input.issue_card.human_decision,
+    new_decision: input.decision,
+    actor_id: input.decided_by.id,
+    actor_role: input.decided_by.role,
+    changed_at: now,
+    partial_note,
+    reason_note,
+  };
+  return { issue_card: updated, audit, history_entry };
 }

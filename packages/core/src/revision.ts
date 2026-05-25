@@ -52,6 +52,55 @@ export function buildRevisionInputFromIssueCards(
   return { inputs, skipped };
 }
 
+/**
+ * Four-way grouping of Issue Cards for the QA / Issues review preview
+ * (Milestone 3C). Used by the UI to show "what will happen on next
+ * revision" without coupling to the low-level RevisionInputEntry shape.
+ *
+ * - `to_be_applied` — accepted cards (full recommended_revision applied)
+ * - `partially_applied` — partially_accepted cards (only partial_note scope)
+ * - `skipped` — rejected + deferred cards (NEVER applied)
+ * - `pending` — undecided cards (block final approval)
+ *
+ * Invariants:
+ *   - the four arrays partition the input — every card appears in exactly
+ *     one of them;
+ *   - `skipped` never includes accepted or pending cards;
+ *   - `pending` is non-empty IFF at least one card is pending, which IFF
+ *     `aggApproveFinal` will refuse.
+ */
+export interface RevisionInputSummary {
+  to_be_applied: IssueCard[];
+  partially_applied: IssueCard[];
+  skipped: IssueCard[];
+  pending: IssueCard[];
+}
+
+export function summarizeRevisionInput(issue_cards: IssueCard[]): RevisionInputSummary {
+  const to_be_applied: IssueCard[] = [];
+  const partially_applied: IssueCard[] = [];
+  const skipped: IssueCard[] = [];
+  const pending: IssueCard[] = [];
+  for (const c of issue_cards) {
+    switch (c.human_decision) {
+      case "accepted":
+        to_be_applied.push(c);
+        break;
+      case "partially_accepted":
+        partially_applied.push(c);
+        break;
+      case "rejected":
+      case "deferred":
+        skipped.push(c);
+        break;
+      case "pending":
+        pending.push(c);
+        break;
+    }
+  }
+  return { to_be_applied, partially_applied, skipped, pending };
+}
+
 export interface CreateRevisionVersionInput {
   project_id: string;
   previous_version: ContractVersion;

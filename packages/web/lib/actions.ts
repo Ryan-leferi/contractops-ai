@@ -216,7 +216,12 @@ export async function actRunMockReviews(state: core.ProjectState): Promise<core.
 
 export function actDecideIssue(
   state: core.ProjectState,
-  args: { issue_id: string; decision: core.IssueDecisionOutcome; partial_note?: string },
+  args: {
+    issue_id: string;
+    decision: core.IssueDecisionOutcome;
+    partial_note?: string;
+    reason_note?: string;
+  },
 ): core.AggregateResult {
   return core.aggDecideIssue(
     state,

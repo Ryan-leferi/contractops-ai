@@ -8,6 +8,7 @@ import type {
   IntakeAnswer,
   IntakeQuestion,
   IssueCard,
+  IssueDecisionHistoryEntry,
   Playbook,
   Project,
   SourceDocument,
@@ -47,6 +48,14 @@ export interface ProjectState {
    * ProjectState (localStorage round-trip safe — pure JSON).
    */
   qa_runs: DeterministicQAResult[];
+  /**
+   * Append-only log of every human decision change against an Issue Card
+   * (Milestone 3C). New entries are appended only by `aggDecideIssue`; no
+   * call site may mutate or remove earlier entries. Internal-only — the
+   * external clean DOCX / cover email renderers MUST NOT include any
+   * entry from this list (PLATFORM_BRIEF.md §5 rule 7).
+   */
+  decision_history: IssueDecisionHistoryEntry[];
 }
 
 export function emptyProjectState(
@@ -69,5 +78,6 @@ export function emptyProjectState(
     agent_runs: [],
     exports: [],
     qa_runs: [],
+    decision_history: [],
   };
 }

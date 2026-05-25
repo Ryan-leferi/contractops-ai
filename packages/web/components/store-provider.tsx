@@ -17,7 +17,12 @@ import {
 } from "@/lib/localstorage-repository";
 import { emptyStore, type AppStore } from "@/lib/actions";
 
-const PROJECTS_KEY = "contractops:projects:v3";
+// `projects` key bumped to v4 in Milestone 3C — ProjectState gained the
+// new `decision_history` field. Old v3 records would be missing it and
+// would throw the first time the Issues page reads `state.decision_history`.
+// Bumping the key drops stale local state; the audit log is independent
+// and stays on v3 since its shape hasn't changed.
+const PROJECTS_KEY = "contractops:projects:v4";
 const AUDITS_KEY = "contractops:audits:v3";
 
 interface StoreContextValue {

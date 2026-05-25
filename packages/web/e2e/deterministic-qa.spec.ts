@@ -70,7 +70,8 @@ test("deterministic_qa Issue Card appears on final QA, user rejects, revision ex
   //    a new line with "기타 " — a known forbidden token. We then reload so
   //    the StoreProvider re-hydrates with the modified state.
   await page.evaluate((pid: string) => {
-    const KEY = "contractops:projects:v3";
+    // Must match `PROJECTS_KEY` in components/store-provider.tsx.
+    const KEY = "contractops:projects:v4";
     const raw = window.localStorage.getItem(KEY);
     if (!raw) throw new Error("project store not in localStorage");
     const list = JSON.parse(raw) as Array<{

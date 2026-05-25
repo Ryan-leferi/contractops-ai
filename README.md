@@ -157,6 +157,29 @@ npm run dev -w @contractops/web    # http://localhost:3000
 
 `*.docx` and `*_cover_email.md` are gitignored, and `npm run repo:hygiene` refuses to allow a tracked artifact of either shape. Generated exports from local runs land in your Downloads folder; never commit them. Ordinary documentation Markdown files (`README.md`, `CLAUDE.md`, `docs/*.md`) remain trackable — only the renderer-suffixed `*_cover_email.md` is treated as a generated artifact.
 
+## Issue Tracker (Milestone 3C)
+
+The `/projects/[id]/issues` page is the legal review and negotiation control surface. After "Run mock reviews" seeds Issue Cards from the Playbook + deterministic QA, the page exposes:
+
+- **Review dashboard** — eight count cards (total, pending, accepted, partial, rejected, deferred, critical/high, deterministic-QA findings) plus a "real-provider AgentRuns" line and a yellow "⚠ N pending — final approval is blocked" banner when applicable. Counts are computed by `dashboardCounts(cards, agent_runs, qa_runs)` in `packages/core/src/issue-tracker.ts` and unit-tested in `packages/core/tests/issue-tracker.test.ts`.
+- **Filters** — severity (critical/high/medium/low), decision (pending/accepted/partially_accepted/rejected/deferred), source agent, issue type, plus a text search that scans `problem + recommended_revision + why_it_matters + business_impact`. Filter state is local UI state only — not persisted in this milestone.
+- **Sort** — `pending first → severity high → low` (default), severity, newest/oldest decided first, or decision status. Undecided cards always fall to the bottom of newest/oldest orderings.
+- **Per-card decision history toggle** — every Issue Card row has a `Decision history (N)` toggle. Opening it shows the append-only `previous → new`, actor + role, timestamp, partial note, and reason note for every change. Hidden by default; testid `history-toggle-<issue_id>`.
+- **Optional reason note** — the pending decision form has an "Optional reason note" input; decided cards have a `Change decision` `<details>` block to re-decide with a fresh reason note. Reason note is **never required** (PLATFORM_BRIEF.md §5 has no such mandate). `partial_note` remains required for `partially_accepted`.
+
+### Decision history is internal
+
+Decision history entries live in `ProjectState.decision_history` and are **append-only** — `aggDecideIssue` appends a new `IssueDecisionHistoryEntry` on every change and never mutates or removes earlier entries. They are **internal legal workflow data**:
+
+- the commentary DOCX and the negotiation matrix DOCX may render them (they are internal exports);
+- the clean DOCX and the cover email Markdown **MUST NOT** — the renderers in `packages/core/src/export-renderer/build-clean.ts` and `build-cover-email.ts` self-scrub against forbidden markers, and the `packages/web/e2e/exports.spec.ts` spec unzips the binary to assert absence.
+
+### Traceability rules still hold
+
+- Every substantive change traces to an Issue Card with a human decision (PLATFORM_BRIEF.md §5 rule 4) — the audit log still captures `issue_card_decided` per change, plus the new `previous_decision` / `reason_note` payload fields.
+- Rejected Issue Cards are **never applied** to a revision (§5 rule 5) — enforced by `buildRevisionInputFromIssueCards` and asserted by the four-group revision preview on `/projects/[id]/qa` (`summarizeRevisionInput`).
+- Final approval refuses to run while any Issue Card is pending — `aggApproveFinal` throws on pending > 0, and the QA page disables the Approve button.
+
 ## Verification gate (Milestone 2F)
 
 GitHub Actions runs `.github/workflows/ci.yml` on every push and pull request. CI is the **required green-bar gate** for merging into `main`. It runs in **mock mode only** — no real LLM API keys are configured in CI, and the workflow explicitly sets `USE_REAL_LLM=false` and `E2E_REAL_OPENAI=false` so no real-provider path can accidentally execute.

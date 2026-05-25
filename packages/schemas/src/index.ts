@@ -11,6 +11,7 @@ export * from "./deal-memo";
 export * from "./drafting-plan";
 export * from "./contract-version";
 export * from "./issue-card";
+export * from "./issue-decision-history";
 export * from "./agent-run";
 export * from "./agent-outputs";
 export * from "./human-decision";

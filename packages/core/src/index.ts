@@ -16,6 +16,7 @@ export * from "./deal-memo";
 export * from "./drafting-plan";
 export * from "./contract-version";
 export * from "./issue-card";
+export * from "./issue-tracker";
 export * from "./revision";
 export * from "./final-qa";
 export * from "./export";

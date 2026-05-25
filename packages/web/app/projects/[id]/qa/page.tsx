@@ -8,7 +8,8 @@ import {
   actCreateRevision,
   actRunMockFinalQA,
 } from "@/lib/actions";
-import { buildRevisionInputFromIssueCards } from "@contractops/core";
+import { buildRevisionInputFromIssueCards, summarizeRevisionInput } from "@contractops/core";
+import type { IssueCard } from "@contractops/schemas";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -22,7 +23,8 @@ export default function QAPage() {
   const [error, setError] = useState<string | null>(null);
 
   const revisionPreview = buildRevisionInputFromIssueCards(state.issue_cards);
-  const pending = state.issue_cards.filter((c) => c.human_decision === "pending");
+  const summary = summarizeRevisionInput(state.issue_cards);
+  const pending = summary.pending;
   const versions = state.contract_versions;
   const latest = versions[versions.length - 1];
   const final = versions.find((v) => v.final);
@@ -75,19 +77,56 @@ export default function QAPage() {
         <CardHeader>
           <CardTitle>Revision input preview</CardTitle>
           <CardDescription>
-            Built by <code>buildRevisionInputFromIssueCards</code>. Rejected and pending cards are
-            excluded by design.
+            Built by <code>summarizeRevisionInput</code>. Only the accepted and
+            partially-accepted groups feed the next revision; rejected /
+            deferred / pending never do. Final approval is blocked while any
+            card is pending — PLATFORM_BRIEF.md §5 rules 3 &amp; 5.
           </CardDescription>
         </CardHeader>
-        <CardContent className="text-sm space-y-2">
-          <div className="grid grid-cols-3 gap-2">
-            <Stat label="Accepted/partial → included" value={String(revisionPreview.inputs.length)} variant="success" testid="stat-included" />
-            <Stat label="Rejected/deferred → skipped" value={String(revisionPreview.skipped.length)} variant="destructive" testid="stat-skipped" />
-            <Stat label="Pending" value={String(pending.length)} variant="warning" testid="stat-pending" />
+        <CardContent className="text-sm space-y-3">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+            <Stat
+              label="To be applied (accepted)"
+              value={String(summary.to_be_applied.length)}
+              variant="success"
+              testid="stat-included"
+            />
+            <Stat
+              label="Partially applied"
+              value={String(summary.partially_applied.length)}
+              variant="warning"
+              testid="stat-partial"
+            />
+            <Stat
+              label="Skipped (rejected / deferred)"
+              value={String(summary.skipped.length)}
+              variant="destructive"
+              testid="stat-skipped"
+            />
+            <Stat
+              label="Pending — blocks final"
+              value={String(summary.pending.length)}
+              variant={summary.pending.length > 0 ? "warning" : "success"}
+              testid="stat-pending"
+            />
           </div>
+          <RevisionGroupList summary={summary} />
           {pending.length > 0 && (
-            <div className="text-xs text-warning">
-              Final approval is blocked while Issue Cards are pending.
+            <div
+              className="text-xs text-warning"
+              data-testid="pending-blocks-final-note"
+            >
+              ⚠ {pending.length} Issue Card{pending.length === 1 ? "" : "s"} still pending — final
+              approval is blocked.
+            </div>
+          )}
+          {/* Belt-and-suspenders cross-check: the legacy
+              buildRevisionInputFromIssueCards must agree with the new
+              summarizeRevisionInput on what will be applied. */}
+          {revisionPreview.inputs.length !==
+            summary.to_be_applied.length + summary.partially_applied.length && (
+            <div className="text-xs text-destructive">
+              Internal inconsistency: revision input count mismatch — please report.
             </div>
           )}
         </CardContent>
@@ -153,6 +192,81 @@ export default function QAPage() {
           available.
         </div>
       )}
+    </div>
+  );
+}
+
+function RevisionGroupList({
+  summary,
+}: {
+  summary: ReturnType<typeof summarizeRevisionInput>;
+}) {
+  const groups: {
+    title: string;
+    cards: IssueCard[];
+    tone: "success" | "warning" | "destructive" | "muted";
+    testid: string;
+  }[] = [
+    {
+      title: "Issues to be applied",
+      cards: summary.to_be_applied,
+      tone: "success",
+      testid: "rev-group-applied",
+    },
+    {
+      title: "Issues partially applied",
+      cards: summary.partially_applied,
+      tone: "warning",
+      testid: "rev-group-partial",
+    },
+    {
+      title: "Issues skipped (rejected / deferred)",
+      cards: summary.skipped,
+      tone: "destructive",
+      testid: "rev-group-skipped",
+    },
+    {
+      title: "Issues still blocking (pending)",
+      cards: summary.pending,
+      tone: "warning",
+      testid: "rev-group-pending",
+    },
+  ];
+  return (
+    <div className="space-y-2">
+      {groups.map((g) => (
+        <div
+          key={g.testid}
+          className="rounded-md border p-2"
+          data-testid={g.testid}
+        >
+          <div className="text-xs font-medium mb-1">
+            {g.title} ({g.cards.length})
+          </div>
+          {g.cards.length === 0 ? (
+            <div className="text-xs text-muted-foreground italic">
+              (none)
+            </div>
+          ) : (
+            <ul className="text-xs space-y-1">
+              {g.cards.map((c) => (
+                <li
+                  key={c.issue_id}
+                  data-testid={`${g.testid}-card-${c.issue_id}`}
+                  className="flex items-start gap-2"
+                >
+                  <span className="font-mono text-[10px] text-muted-foreground">
+                    {c.issue_id.slice(0, 8)}
+                  </span>
+                  <span>
+                    {c.location.article ?? "—"} · {c.severity} · {c.source_agent}: {c.problem}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      ))}
     </div>
   );
 }

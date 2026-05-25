@@ -587,6 +587,13 @@ export interface AggDecideIssueInput {
   decision: IssueDecisionOutcome;
   decided_by: Actor;
   partial_note?: string;
+  /**
+   * Optional short rationale captured at decision time (Milestone 3C).
+   * Persisted to both the IssueCard.reason_note (latest) and to the new
+   * decision_history entry. Never required by core; UI may collect it
+   * for any decision.
+   */
+  reason_note?: string;
 }
 
 export function aggDecideIssue(
@@ -602,6 +609,7 @@ export function aggDecideIssue(
     decision: input.decision,
     decided_by: input.decided_by,
     partial_note: input.partial_note,
+    reason_note: input.reason_note,
     env,
   });
   return {
@@ -610,6 +618,10 @@ export function aggDecideIssue(
       issue_cards: state.issue_cards.map((c) =>
         c.issue_id === input.issue_id ? res.issue_card : c,
       ),
+      // Append-only: NEVER overwrite, NEVER reorder. The history grows
+      // monotonically with every decision change. (PLATFORM_BRIEF.md §12
+      // rule 4 — audit trail.)
+      decision_history: [...state.decision_history, res.history_entry],
     },
     audits: [res.audit],
   };
