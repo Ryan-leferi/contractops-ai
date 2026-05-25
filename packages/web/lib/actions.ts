@@ -1,13 +1,22 @@
 import * as core from "@contractops/core";
 import type * as S from "@contractops/schemas";
+import type { Operation } from "./operations";
 
 // Re-export ProjectState from core so pages don't need a second import.
 export type { ProjectState } from "@contractops/core";
 
+/**
+ * Browser-side application store (Milestone 3D).
+ *
+ * Now backed by the server's in-memory store at `/api/projects` — the
+ * StoreProvider fetches from the server on mount and re-fetches after
+ * every mutation. The browser keeps a cached copy in React state for
+ * synchronous UI rendering.
+ */
 export interface AppStore {
   projectIds: string[];
   projects: Record<string, core.ProjectState>;
-  /** Flat audit collection. Persisted via AppendOnlyRepository. */
+  /** Flat per-project audit collection, fetched alongside ProjectState. */
   audits: S.AuditLog[];
 }
 
@@ -15,6 +24,9 @@ export function emptyStore(): AppStore {
   return { projectIds: [], projects: {}, audits: [] };
 }
 
+// Demo actors — used by the server-side AggregateContext builder. They
+// stay in this client-safe module so server and client agree on the
+// canonical actor ids that get written into AuditLog payloads.
 export const DEMO_USER: S.Actor = {
   id: "user_demo",
   role: "user",
@@ -39,225 +51,118 @@ export function makeEnv(): core.Env {
   };
 }
 
-/**
- * Build a per-call AggregateContext. The MockProvider is configured with
- * Playbook-driven canned responses so the UI demo shows richer content than
- * the bare DEFAULT_MOCK_JSON_RESPONSES would produce.
- *
- * Milestone 2C: the Deal Memo drafter optionally routes to a server-side
- * OpenAI provider via a browser-side HTTP proxy. Activation requires:
- *   - NEXT_PUBLIC_USE_REAL_LLM=true
- *   - NEXT_PUBLIC_LLM_PROVIDER_ALLOWLIST contains "openai"
- *
- * The real OPENAI_API_KEY is consulted only on the server (the route handler);
- * it never reaches the browser. All other roles stay on the mock.
- */
-import { createOpenAIProxyProvider } from "./openai-proxy-provider";
-import { createAnthropicProxyProvider } from "./anthropic-proxy-provider";
-
-function realModeOn(): boolean {
-  const useReal = (process.env.NEXT_PUBLIC_USE_REAL_LLM ?? "false").toLowerCase();
-  return useReal === "true" || useReal === "1";
-}
-
-function allowlist(): string[] {
-  return (process.env.NEXT_PUBLIC_LLM_PROVIDER_ALLOWLIST ?? "")
-    .split(",")
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0);
-}
-
-export function buildAggregateContext(state: core.ProjectState): core.AggregateContext {
-  const mockProvider = core.createMockProvider({
-    json_responses: buildPlaybookCannedResponses(state),
-  });
-
-  // Real-mode provider seams. Each role only escalates when:
-  //   1. NEXT_PUBLIC_USE_REAL_LLM is true (build-time switch),
-  //   2. its provider id is on NEXT_PUBLIC_LLM_PROVIDER_ALLOWLIST.
-  // The actual API keys live ONLY on the server; the browser proxy POSTs to
-  // the matching /api/agent/<role> route which calls selectProviderByName.
-  const allow = realModeOn() ? allowlist() : [];
-
-  const realDealMemoProvider: core.LLMProvider | null = allow.includes("openai")
-    ? createOpenAIProxyProvider({
-        endpoint: "/api/agent/deal-memo",
-        model_id_hint: process.env.NEXT_PUBLIC_OPENAI_MODEL || "openai-remote",
-      })
-    : null;
-
-  const realCounterpartyProvider: core.LLMProvider | null = allow.includes("anthropic")
-    ? createAnthropicProxyProvider({
-        endpoint: "/api/agent/counterparty-reviewer",
-        model_id_hint: process.env.NEXT_PUBLIC_ANTHROPIC_MODEL || "anthropic-remote",
-      })
-    : null;
-
-  return {
-    provider: mockProvider,
-    env_config: core.DEFAULT_ENV_CONFIG, // server is authoritative for real env
-    env: makeEnv(),
-    actor: DEMO_LAWYER,
-    getProvider: (role) => {
-      if (role === "deal_memo_drafter" && realDealMemoProvider) {
-        return realDealMemoProvider;
-      }
-      if (role === "counterparty_reviewer" && realCounterpartyProvider) {
-        return realCounterpartyProvider;
-      }
-      return mockProvider;
-    },
-  };
-}
-
-// ---------- Web action wrappers ----------
+// ───────────────────────────────────────────────────────────────────────
+// Operation builders (Milestone 3D).
 //
-// Sync ops (no agent) — direct pass-through. Async ops (agent-backed) build a
-// fresh AggregateContext each call.
+// Each `act*` function used to call core directly; now it returns a
+// SERIALIZABLE descriptor that the StoreProvider POSTs to the
+// /api/projects/[id]/operations route. The server dispatches it back to
+// the same core function — workflow logic still lives in @contractops/core.
+// ───────────────────────────────────────────────────────────────────────
 
-export function actCreateProject(name: string): core.AggregateResult {
-  return core.aggCreateProject({ name, created_by: DEMO_USER }, makeEnv());
-}
-
-export interface ActAddSourceArgs {
+export function actAddSource(args: {
   file_name: string;
   source_type: S.SourceType;
   version: string;
   incorporated: boolean;
   source_priority: number;
+}): Operation {
+  return { name: "add_source", args };
 }
 
-export function actAddSource(
-  state: core.ProjectState,
-  args: ActAddSourceArgs,
-): core.AggregateResult {
-  return core.aggAddSource(state, { ...args, uploaded_by: DEMO_USER }, makeEnv());
+export function actAddSourceContent(args: {
+  source_document_id: string;
+  text_content: string;
+  language?: string | null;
+}): Operation {
+  return { name: "add_source_content", args };
 }
 
-export function actAddSourceContent(
-  state: core.ProjectState,
-  args: { source_document_id: string; text_content: string; language?: string | null },
-): core.AggregateResult {
-  return core.aggAddSourceContent(
-    state,
-    {
-      source_document_id: args.source_document_id,
-      text_content: args.text_content,
-      language: args.language ?? null,
-      is_synthetic: true,
-    },
-    makeEnv(),
-  );
+export function actLockSourcePack(): Operation {
+  return { name: "lock_source_pack", args: {} };
 }
 
-export function actLockSourcePack(state: core.ProjectState): core.AggregateResult {
-  return core.aggLockSourcePack(state, DEMO_LAWYER, makeEnv());
+export function actClassifyAndConfirm(args: {
+  confirmed_type: string;
+  hint?: string;
+}): Operation {
+  return { name: "classify_and_confirm", args };
 }
 
-export function actClassifyAndConfirm(
-  state: core.ProjectState,
-  args: { confirmed_type: string; hint?: string },
-): core.AggregateResult {
-  return core.aggClassifyAndConfirm(
-    state,
-    { ...args, confirmed_by: DEMO_LAWYER },
-    makeEnv(),
-  );
+export function actSelectPlaybook(): Operation {
+  // The server loads the playbook catalog itself (it has filesystem
+  // access). No need to send the catalog over the wire.
+  return { name: "select_playbook", args: {} };
 }
 
-export function actSelectPlaybook(
-  state: core.ProjectState,
-  available_playbooks: S.Playbook[],
-): core.AggregateResult {
-  return core.aggSelectPlaybook(
-    state,
-    { available_playbooks, selector: DEMO_LAWYER },
-    makeEnv(),
-  );
+export function actAnswerIntake(args: {
+  question_id: string;
+  value: string;
+}): Operation {
+  return { name: "answer_intake", args };
 }
 
-export function actAnswerIntake(
-  state: core.ProjectState,
-  args: { question_id: string; value: string },
-): core.AggregateResult {
-  return core.aggAnswerIntake(
-    state,
-    { ...args, answered_by: DEMO_USER },
-    makeEnv(),
-  );
+export function actDraftDealMemo(): Operation {
+  return { name: "draft_deal_memo", args: {} };
 }
 
-// Agent-backed (async) wrappers — each builds a fresh AggregateContext so the
-// per-project canned mock responses reflect the latest state.
-
-export async function actDraftDealMemo(state: core.ProjectState): Promise<core.AggregateResult> {
-  return core.aggDraftDealMemo(state, buildAggregateContext(state));
+export function actApproveDealMemo(): Operation {
+  return { name: "approve_deal_memo", args: {} };
 }
 
-export function actApproveDealMemo(state: core.ProjectState): core.AggregateResult {
-  return core.aggApproveDealMemo(state, DEMO_LAWYER, makeEnv());
+export function actDraftDraftingPlan(): Operation {
+  return { name: "draft_drafting_plan", args: {} };
 }
 
-export async function actDraftDraftingPlan(state: core.ProjectState): Promise<core.AggregateResult> {
-  return core.aggDraftDraftingPlan(state, buildAggregateContext(state));
+export function actApproveDraftingPlan(): Operation {
+  return { name: "approve_drafting_plan", args: {} };
 }
 
-export function actApproveDraftingPlan(state: core.ProjectState): core.AggregateResult {
-  return core.aggApproveDraftingPlan(state, DEMO_LAWYER, makeEnv());
+export function actCreateV0(): Operation {
+  return { name: "create_v0", args: {} };
 }
 
-export async function actCreateV0(state: core.ProjectState): Promise<core.AggregateResult> {
-  return core.aggCreateV0(state, buildAggregateContext(state));
+export function actRunMockReviews(): Operation {
+  return { name: "run_mock_reviews", args: {} };
 }
 
-export async function actRunMockReviews(state: core.ProjectState): Promise<core.AggregateResult> {
-  return core.aggRunMockReviews(state, buildAggregateContext(state));
+export function actDecideIssue(args: {
+  issue_id: string;
+  decision: core.IssueDecisionOutcome;
+  partial_note?: string;
+  reason_note?: string;
+}): Operation {
+  return { name: "decide_issue", args };
 }
 
-export function actDecideIssue(
-  state: core.ProjectState,
-  args: {
-    issue_id: string;
-    decision: core.IssueDecisionOutcome;
-    partial_note?: string;
-    reason_note?: string;
-  },
-): core.AggregateResult {
-  return core.aggDecideIssue(
-    state,
-    { ...args, decided_by: DEMO_LAWYER },
-    makeEnv(),
-  );
+export function actRunMockFinalQA(): Operation {
+  return { name: "run_mock_final_qa", args: {} };
 }
 
-export async function actCreateRevision(state: core.ProjectState): Promise<core.AggregateResult> {
-  return core.aggCreateRevision(state, buildAggregateContext(state));
+export function actCreateRevision(): Operation {
+  return { name: "create_revision", args: {} };
 }
 
-export async function actRunMockFinalQA(state: core.ProjectState): Promise<core.AggregateResult> {
-  return core.aggRunMockFinalQA(state, buildAggregateContext(state));
+export function actApproveFinal(): Operation {
+  return { name: "approve_final", args: {} };
 }
 
-export function actApproveFinal(state: core.ProjectState): core.AggregateResult {
-  return core.aggApproveFinal(state, DEMO_LAWYER, makeEnv());
+export function actCreateExport(args: {
+  export_type: S.ExportType;
+  content: string;
+  file_name?: string;
+}): Operation {
+  return { name: "create_export", args };
 }
 
-export function actCreateExport(
-  state: core.ProjectState,
-  args: { export_type: S.ExportType; content: string; file_name?: string },
-): core.AggregateResult {
-  return core.aggCreateExport(
-    state,
-    { ...args, created_by: DEMO_LAWYER },
-    makeEnv(),
-  );
-}
-
-// ---------- Playbook-driven canned mock responses ----------
+// ───────────────────────────────────────────────────────────────────────
+// Playbook-driven canned mock responses (used by the server-side
+// AggregateContext builder in `lib/server-aggregate-context.ts`).
 //
-// Build per-call MockProvider responses that derive richer placeholder content
-// from the project's current ProjectState. None of this hardcodes any contract
-// product name — everything is read from the loaded Playbook.
+// Pure function — no side effects, no imports of network/IO modules —
+// so it is safe to share between client and server. (Today only the
+// server uses it, but pages may call into it for previews in future.)
+// ───────────────────────────────────────────────────────────────────────
 
 function rid(prompt_id: string, input_id: string): string {
   return `${prompt_id}::${input_id}`;
@@ -273,7 +178,6 @@ export function buildPlaybookCannedResponses(
 
   if (!playbook) return responses;
 
-  // Deal Memo
   responses[rid("deal_memo_drafter", project_id)] = {
     content: composeDealMemo(state),
     warnings: state.intake_questions
@@ -282,7 +186,6 @@ export function buildPlaybookCannedResponses(
       .map((q) => `missing intake: ${q.key}`),
   };
 
-  // Drafting Plan
   responses[rid("drafting_plan_drafter", project_id)] = {
     content: composeDraftingPlan(state),
     table_of_contents: playbook.default_table_of_contents,
@@ -290,14 +193,12 @@ export function buildPlaybookCannedResponses(
     open_questions: [],
   };
 
-  // v0 draft
   responses[rid("contract_drafter", project_id)] = {
     content: composeV0Draft(state),
     version_number: "v0",
     notes: [],
   };
 
-  // Reviewers (only meaningful once a draft exists)
   if (latest) {
     const risks = playbook.common_risks.slice(0, 2);
     const flags = playbook.red_flags.slice(0, 1);
@@ -359,7 +260,6 @@ export function buildPlaybookCannedResponses(
       ],
     };
 
-    // Revision: synthesize a body that includes the rendered version + applied cards.
     const accepted = state.issue_cards.filter(
       (c) => c.human_decision === "accepted" || c.human_decision === "partially_accepted",
     );
@@ -369,7 +269,6 @@ export function buildPlaybookCannedResponses(
       notes: [],
     };
 
-    // Final QA: empty findings by default.
     responses[rid("final_qa_assistant", latest.id)] = {
       findings: [],
       passes: playbook.final_qa_checklist,
@@ -447,8 +346,18 @@ function composeV0Draft(state: core.ProjectState): string {
       `[Body to be drafted from human-approved Drafting Plan]`,
     ].join("\n");
   }
+  // Deliberately seed one article with a Korean forbidden-expression token
+  // ("기타") so the deterministic-QA engine always has at least one finding
+  // for the demo + the deterministic-qa e2e spec. PLATFORM_BRIEF.md §6
+  // discourages 기타 in favor of 그 밖의; the deterministic QA flags it.
   const articles = toc
-    .map((heading) => `${heading}\n  [Mock body for ${heading} — derived from Playbook + Drafting Plan]`)
+    .map((heading, i) => {
+      const body = `  [Mock body for ${heading} — derived from Playbook + Drafting Plan]`;
+      if (i === toc.length - 1) {
+        return `${heading}\n${body}\n  기타 부수적인 사항은 양 당사자가 별도 협의한다.`;
+      }
+      return `${heading}\n${body}`;
+    })
     .join("\n\n");
   return `[MOCK v0 DRAFT — ${playbook.contract_type}]\n\n${articles}`;
 }
@@ -467,7 +376,11 @@ function composeRevisionBody(
   return [prev.content, ...sections].join("\n\n");
 }
 
-// ---------- Export content placeholders (no commentary in clean) ----------
+// ───────────────────────────────────────────────────────────────────────
+// Export content placeholders — pure helpers used by the exports page
+// to show a human-readable summary alongside each downloaded binary.
+// They never touch the server; they just stringify ProjectState slices.
+// ───────────────────────────────────────────────────────────────────────
 
 export function mockCleanExportContent(
   state: core.ProjectState,

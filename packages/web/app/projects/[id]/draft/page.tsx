@@ -18,7 +18,7 @@ export default function DraftPage() {
   async function generate() {
     try {
       setError(null);
-      await applyProjectOp(params.id, (s) => actCreateV0(s));
+      await applyProjectOp(params.id, actCreateV0());
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }

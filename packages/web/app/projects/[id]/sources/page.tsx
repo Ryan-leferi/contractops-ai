@@ -53,8 +53,9 @@ export default function SourcesPage() {
     if (!fileName.trim()) return;
     try {
       setError(null);
-      await applyProjectOp(params.id, (s) =>
-        actAddSource(s, {
+      await applyProjectOp(
+        params.id,
+        actAddSource({
           file_name: fileName.trim(),
           source_type: sourceType,
           version,
@@ -73,7 +74,7 @@ export default function SourcesPage() {
     if (!confirm("Lock the Source Pack? No documents can be added or removed after lock.")) return;
     try {
       setError(null);
-      await applyProjectOp(params.id, (s) => actLockSourcePack(s));
+      await applyProjectOp(params.id, actLockSourcePack());
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
@@ -193,8 +194,9 @@ export default function SourcesPage() {
                   onSaveContent={async (text) => {
                     try {
                       setError(null);
-                      await applyProjectOp(params.id, (s) =>
-                        actAddSourceContent(s, { source_document_id: d.id, text_content: text }),
+                      await applyProjectOp(
+                        params.id,
+                        actAddSourceContent({ source_document_id: d.id, text_content: text }),
                       );
                     } catch (e) {
                       setError(e instanceof Error ? e.message : String(e));

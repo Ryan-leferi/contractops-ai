@@ -101,3 +101,19 @@ Lightweight ADRs. Each decision derives from [PLATFORM_BRIEF.md](../PLATFORM_BRI
 **Decision:** Korean drafting style (numbering, preferred verbs, forbidden expressions) is encoded in Playbook fields (`drafting_style_notes`, `final_qa_checklist`) and in deterministic QA rules (forbidden expression detection, numbering checks). The workflow itself is language-agnostic.
 
 **Consequence:** Future support for additional jurisdictions adds Playbooks and QA rules; it does not fork the workflow.
+
+---
+
+## ADR-011 — Server-side in-memory project store (no DB yet)
+
+**Source:** Milestone 3D scope; PLATFORM_BRIEF.md §13 rule 8 ("avoid overengineering").
+
+**Decision:** ProjectState, AuditLog, IssueDecisionHistory, SourceDocumentContent, QA runs, AgentRuns, and ExportFile metadata for the web app live in a process-wide `Map<projectId, ProjectState>` exposed via `packages/web/lib/server-store.ts`. The browser is no longer the source of truth — `localStorage` is unused. Every workflow mutation goes through `POST /api/projects/[id]/operations`, which dispatches a named `Operation` descriptor to a `core.agg*` function (workflow logic stays in `@contractops/core`).
+
+**Consequence:**
+
+- Multi-browser-context demo: two tabs or browsers point at the same server process and see the same state.
+- The store **resets on every server restart** and has **no persistence, no auth, no replication**. This is explicit non-production behavior; the README documents it as such.
+- Real durability (PostgreSQL or another database) is out of scope for this milestone and explicitly forbidden by the milestone prompt. A future milestone will swap `lib/server-store.ts`'s storage layer for a real database. The Operation-descriptor boundary makes that swap a one-file change — no page or aggregate logic needs to move.
+- Real LLM providers (OpenAI, Anthropic) are now instantiated directly on the server inside `lib/server-aggregate-context.ts` via `selectProviderByName(name, env)`; the browser no longer needs the `/api/agent/*` proxy hop. The old proxy routes remain for backward compatibility but are no longer used by the StoreProvider.
+- Confidential source documents MUST NOT be POSTed into this store. Per PLATFORM_BRIEF.md §10 and the milestone prompt, only synthetic / sanitized text belongs here — the in-memory store provides no encryption or access control.

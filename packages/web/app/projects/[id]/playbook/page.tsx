@@ -16,11 +16,11 @@ export default function PlaybookPage() {
   const state = store.projects[params.id]!;
   const [error, setError] = useState<string | null>(null);
 
-  function select() {
+  async function select() {
     if (!playbooks) return;
     try {
       setError(null);
-      applyProjectOp(params.id, (s) => actSelectPlaybook(s, playbooks));
+      await applyProjectOp(params.id, actSelectPlaybook());
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }

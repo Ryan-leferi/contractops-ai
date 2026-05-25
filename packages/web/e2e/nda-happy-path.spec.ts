@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { waitForStoreIdle } from "./helpers";
 
 /**
  * NDA happy-path end-to-end. Drives the UI from project creation through
@@ -6,8 +7,10 @@ import { expect, test } from "@playwright/test";
  * acceptance criterion along the way.
  */
 
-test.beforeEach(async ({ page }) => {
-  // Fresh localStorage per test
+test.beforeEach(async ({ page, request }) => {
+  // 3D: state lives in the server-side in-memory store. Reset it before
+  // each test so the suite stays isolated.
+  await request.post("/api/projects/reset");
   await page.goto("/projects");
   await page.evaluate(() => window.localStorage.clear());
   await page.reload();
@@ -125,21 +128,27 @@ test("NDA happy path — create → sources → confirm → playbook → intake 
   const rejectCard = pendingCards.nth(0);
   const rejectProblemText = await rejectCard.locator('h3').first().innerText();
   await rejectCard.locator('[data-testid="reject-btn"]').click();
+  await waitForStoreIdle(page);
 
-  // Re-query the pending list because the previous card was removed.
-  let remainingCards = page.locator('[data-testid^="pending-card-"]');
   // Second pending → partial accept
-  if ((await remainingCards.count()) > 1) {
-    const partialCard = remainingCards.nth(0);
+  let remainingCount = await page.locator('[data-testid^="pending-card-"]').count();
+  if (remainingCount > 1) {
+    const partialCard = page.locator('[data-testid^="pending-card-"]').nth(0);
     await partialCard.locator('[data-testid="partial-note-input"]').fill("Cap at 50%");
     await partialCard.locator('[data-testid="partial-accept-btn"]').click();
+    await waitForStoreIdle(page);
   }
 
-  // Accept all remaining pending cards
-  remainingCards = page.locator('[data-testid^="pending-card-"]');
-  while ((await remainingCards.count()) > 0) {
-    await remainingCards.nth(0).locator('[data-testid="accept-btn"]').click();
-    remainingCards = page.locator('[data-testid^="pending-card-"]');
+  // Accept all remaining pending cards — re-query each iteration since the
+  // DOM mutates after every decision (3D: server round-trip + react commit).
+  remainingCount = await page.locator('[data-testid^="pending-card-"]').count();
+  while (remainingCount > 0) {
+    await page
+      .locator('[data-testid^="pending-card-"] [data-testid="accept-btn"]')
+      .first()
+      .click();
+    await waitForStoreIdle(page);
+    remainingCount = await page.locator('[data-testid^="pending-card-"]').count();
   }
 
   await expect(page.getByTestId("pending-section")).toHaveCount(0);

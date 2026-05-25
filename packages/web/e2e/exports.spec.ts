@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { readFile } from "node:fs/promises";
+import { waitForStoreIdle } from "./helpers";
 
 /**
  * Milestone 3B — all four real exports end-to-end.
@@ -16,7 +17,8 @@ import { readFile } from "node:fs/promises";
  * The gated real-OpenAI spec stays skipped — no real provider needed.
  */
 
-test.beforeEach(async ({ page }) => {
+test.beforeEach(async ({ page, request }) => {
+  await request.post("/api/projects/reset");
   await page.goto("/projects");
   await page.evaluate(() => window.localStorage.clear());
   await page.reload();
@@ -94,10 +96,15 @@ test("all four MVP exports download with correct format and strict audience sepa
   // entry to render, then accept the rest.
   const firstReject = page.locator('[data-testid^="pending-card-"]').nth(0);
   await firstReject.locator('[data-testid="reject-btn"]').click();
-  let pending = page.locator('[data-testid^="pending-card-"]');
-  while ((await pending.count()) > 0) {
-    await pending.nth(0).locator('[data-testid="accept-btn"]').click();
-    pending = page.locator('[data-testid^="pending-card-"]');
+  await waitForStoreIdle(page);
+  let pendingCount = await page.locator('[data-testid^="pending-card-"]').count();
+  while (pendingCount > 0) {
+    await page
+      .locator('[data-testid^="pending-card-"] [data-testid="accept-btn"]')
+      .first()
+      .click();
+    await waitForStoreIdle(page);
+    pendingCount = await page.locator('[data-testid^="pending-card-"]').count();
   }
 
   await page.goto(`/projects/${projectId}/qa`);

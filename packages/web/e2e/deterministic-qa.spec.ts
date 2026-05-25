@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { waitForStoreIdle } from "./helpers";
 
 /**
  * Deterministic QA flow (mock-mode).
@@ -13,7 +14,10 @@ import { expect, test } from "@playwright/test";
  * deterministic QA layer is in play.
  */
 
-test.beforeEach(async ({ page }) => {
+test.beforeEach(async ({ page, request }) => {
+  // 3D: state lives in the server-side in-memory store. Reset it before
+  // each test so the suite stays isolated.
+  await request.post("/api/projects/reset");
   await page.goto("/projects");
   await page.evaluate(() => window.localStorage.clear());
   await page.reload();
@@ -65,35 +69,24 @@ test("deterministic_qa Issue Card appears on final QA, user rejects, revision ex
   await page.click('[data-testid="generate-v0-btn"]');
   await expect(page.getByTestId("v0-content")).toContainText("MOCK v0 DRAFT");
 
-  // 2. Inject a forbidden expression into v0 directly via localStorage so the
-  //    deterministic QA engine has something to flag. The injection appends
-  //    a new line with "기타 " — a known forbidden token. We then reload so
-  //    the StoreProvider re-hydrates with the modified state.
-  await page.evaluate((pid: string) => {
-    // Must match `PROJECTS_KEY` in components/store-provider.tsx.
-    const KEY = "contractops:projects:v4";
-    const raw = window.localStorage.getItem(KEY);
-    if (!raw) throw new Error("project store not in localStorage");
-    const list = JSON.parse(raw) as Array<{
-      project: { id: string };
-      contract_versions: { content: string }[];
-    }>;
-    const me = list.find((p) => p.project.id === pid);
-    if (!me) throw new Error("project not found in store");
-    const v = me.contract_versions[me.contract_versions.length - 1]!;
-    v.content = `${v.content}\n\n제99조 (보충)\n기타 항목 처리.`;
-    window.localStorage.setItem(KEY, JSON.stringify(list));
-  }, projectId);
-  await page.reload();
+  // 2. (3D refactor) State now lives in the server's in-memory store; we
+  //    can't poke it via localStorage. Instead the mock v0 body already
+  //    contains a known forbidden expression ("기타 ...") seeded by
+  //    `composeV0Draft` in lib/actions.ts, so the deterministic QA engine
+  //    will find at least one issue without any injection.
 
   // 3. Run reviews → decide all open cards → revision → final QA.
   await page.goto(`/projects/${projectId}/issues`);
   await page.click('[data-testid="run-reviews-btn"]');
   await expect(page.getByTestId("pending-section")).toBeVisible();
-  let pending = page.locator('[data-testid^="pending-card-"]');
-  while ((await pending.count()) > 0) {
-    await pending.nth(0).locator('[data-testid="accept-btn"]').click();
-    pending = page.locator('[data-testid^="pending-card-"]');
+  let pendingCount = await page.locator('[data-testid^="pending-card-"]').count();
+  while (pendingCount > 0) {
+    await page
+      .locator('[data-testid^="pending-card-"] [data-testid="accept-btn"]')
+      .first()
+      .click();
+    await waitForStoreIdle(page);
+    pendingCount = await page.locator('[data-testid^="pending-card-"]').count();
   }
   await expect(page.getByTestId("pending-section")).toHaveCount(0);
 
@@ -119,12 +112,17 @@ test("deterministic_qa Issue Card appears on final QA, user rejects, revision ex
   const cardText = await cardToReject.innerText();
   expect(cardText).toContain("deterministic_qa");
   await cardToReject.locator('[data-testid="reject-btn"]').click();
+  await waitForStoreIdle(page);
 
   // Accept any remaining pending cards so revision can proceed.
-  let other = page.locator('[data-testid^="pending-card-"]');
-  while ((await other.count()) > 0) {
-    await other.nth(0).locator('[data-testid="accept-btn"]').click();
-    other = page.locator('[data-testid^="pending-card-"]');
+  let otherCount = await page.locator('[data-testid^="pending-card-"]').count();
+  while (otherCount > 0) {
+    await page
+      .locator('[data-testid^="pending-card-"] [data-testid="accept-btn"]')
+      .first()
+      .click();
+    await waitForStoreIdle(page);
+    otherCount = await page.locator('[data-testid^="pending-card-"]').count();
   }
   await expect(page.getByTestId("pending-section")).toHaveCount(0);
 

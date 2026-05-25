@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { waitForStoreIdle } from "./helpers";
 
 /**
  * Milestone 3C — Issue Tracker filters, decision history, dashboard.
@@ -15,7 +16,8 @@ import { expect, test } from "@playwright/test";
  * Does NOT touch real-provider gating — runs entirely in mock mode.
  */
 
-test.beforeEach(async ({ page }) => {
+test.beforeEach(async ({ page, request }) => {
+  await request.post("/api/projects/reset");
   await page.goto("/projects");
   await page.evaluate(() => window.localStorage.clear());
   await page.reload();
@@ -116,6 +118,7 @@ test("Issue Tracker: dashboard, filters, decision history, blocked-final, revisi
   const rejectedProblem = await firstPending.locator("h3").first().innerText();
   await firstPending.locator('[data-testid="reason-note-input"]').fill("first reject reason");
   await firstPending.locator('[data-testid="reject-btn"]').click();
+  await waitForStoreIdle(page);
 
   // Dashboard reflects the change
   await expect(page.getByTestId("dash-rejected")).toContainText("1");
@@ -145,6 +148,7 @@ test("Issue Tracker: dashboard, filters, decision history, blocked-final, revisi
   await decidedRejected.locator('[data-testid^="change-decision-toggle-"]').first().click();
   await decidedRejected.locator('[data-testid^="re-reason-input-"]').first().fill("reconsidered");
   await decidedRejected.locator('[data-testid^="re-accept-btn-"]').first().click();
+  await waitForStoreIdle(page);
 
   const acceptedCard = page.locator('[data-testid="decided-card-accepted"]').first();
   await expect(acceptedCard).toBeVisible();
@@ -160,12 +164,17 @@ test("Issue Tracker: dashboard, filters, decision history, blocked-final, revisi
   const secondPending = page.locator('[data-testid^="pending-card-"]').first();
   const secondProblem = await secondPending.locator("h3").first().innerText();
   await secondPending.locator('[data-testid="reject-btn"]').click();
+  await waitForStoreIdle(page);
 
   // ── Approve everything still pending so we can hit final approval ─
-  let pending = page.locator('[data-testid^="pending-card-"]');
-  while ((await pending.count()) > 0) {
-    await pending.nth(0).locator('[data-testid="accept-btn"]').click();
-    pending = page.locator('[data-testid^="pending-card-"]');
+  let remaining = await page.locator('[data-testid^="pending-card-"]').count();
+  while (remaining > 0) {
+    await page
+      .locator('[data-testid^="pending-card-"] [data-testid="accept-btn"]')
+      .first()
+      .click();
+    await waitForStoreIdle(page);
+    remaining = await page.locator('[data-testid^="pending-card-"]').count();
   }
   await expect(page.getByTestId("dash-pending")).toContainText("0");
 
@@ -235,7 +244,12 @@ test("Issue Tracker: final approval refuses while ANY Issue Card is pending", as
   await page.click('[data-testid="run-reviews-btn"]');
 
   // Decide only ONE card so the rest stay pending.
-  await page.locator('[data-testid^="pending-card-"]').first().locator('[data-testid="accept-btn"]').click();
+  await page
+    .locator('[data-testid^="pending-card-"]')
+    .first()
+    .locator('[data-testid="accept-btn"]')
+    .click();
+  await waitForStoreIdle(page);
   // At least one card must still be pending for this assertion to mean anything.
   const remaining = await page.locator('[data-testid^="pending-card-"]').count();
   expect(remaining).toBeGreaterThan(0);

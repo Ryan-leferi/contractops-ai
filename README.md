@@ -157,6 +157,57 @@ npm run dev -w @contractops/web    # http://localhost:3000
 
 `*.docx` and `*_cover_email.md` are gitignored, and `npm run repo:hygiene` refuses to allow a tracked artifact of either shape. Generated exports from local runs land in your Downloads folder; never commit them. Ordinary documentation Markdown files (`README.md`, `CLAUDE.md`, `docs/*.md`) remain trackable — only the renderer-suffixed `*_cover_email.md` is treated as a generated artifact.
 
+## Server-side in-memory store (Milestone 3D)
+
+The web MVP is now backed by a **server-side in-memory project store**. The browser is no longer the source of truth — `localStorage` is unused for project data.
+
+> **NOT FOR PRODUCTION.** State lives in `process.memory`. It **resets on every server restart**. There is no persistence, no replication, no auth. The store is a demo and CI scaffold; a future milestone will replace `packages/web/lib/server-store.ts`'s storage layer with PostgreSQL (or another durable DB) without changing the Operation-descriptor boundary. Until then: **do not post real confidential source documents** into the store — only synthetic / sanitized text belongs here (PLATFORM_BRIEF.md §10, §12 rule 6).
+
+### API surface
+
+| Route | Method | Purpose |
+|---|---|---|
+| `/api/projects` | `GET` | List project summaries |
+| `/api/projects` | `POST` | Create a new project (`{ name }`) |
+| `/api/projects/[id]` | `GET` | Return full `ProjectState` + project audits |
+| `/api/projects/[id]/operations` | `POST` | Apply an `Operation` descriptor; returns updated state + new audits |
+| `/api/projects/[id]/audit-logs` | `GET` | Return the project's append-only audit log |
+| `/api/projects/[id]/decision-history` | `GET` | Return the project's `IssueDecisionHistoryEntry[]` |
+| `/api/projects/reset` | `POST` | **Dev/demo only.** Drops every project + audit. In production (`NODE_ENV === "production"`) returns 403 unless `ALLOW_SERVER_STORE_RESET=true` is set. |
+
+The `/operations` endpoint accepts a typed `Operation` from `packages/web/lib/operations.ts`:
+
+```ts
+type Operation =
+  | { name: "add_source"; args: {...} }
+  | { name: "lock_source_pack"; args: {} }
+  | { name: "decide_issue"; args: { issue_id, decision, partial_note?, reason_note? } }
+  | { name: "approve_final"; args: {} }
+  | ...; // 17 named operations total
+```
+
+It dispatches each descriptor to the matching `core.agg*` function — every workflow invariant (Source Pack lock, pending-blocks-final, append-only audits, append-only decision history, clean/commentary separation) is still enforced by `@contractops/core`. The route is a thin pass-through.
+
+### Multi-session demo
+
+Two browser contexts that point at the same Next.js process share state through the server. The Playwright `multi-session.spec.ts` proves it:
+
+1. Browser **A** creates a project and walks it up through "issues_open".
+2. Browser **B** opens the same project URL — sees A's state including every pending Issue Card.
+3. Browser **B** rejects one Issue Card with a reason note.
+4. Browser **A** reloads — sees B's change, reads B's append-only `decision_history` entry (`pending → rejected · rejected by browser B`).
+5. The rejected card still stays excluded from A's revision, and final approval is still blocked while any pending card remains.
+
+### What changed in the web layer
+
+- `packages/web/lib/server-store.ts` — process-wide `Map<projectId, ProjectState>` pinned on `globalThis` so HMR doesn't recreate it.
+- `packages/web/lib/operations.ts` — `Operation` discriminated union (single source of truth between client builders and server dispatcher).
+- `packages/web/lib/server-aggregate-context.ts` — server-side `AggregateContext` factory. Real OpenAI / Anthropic providers are now instantiated **directly on the server** via `selectProviderByName(name, env)` — the old browser→proxy→server hop is no longer needed (the `/api/agent/*` proxy routes remain for backward compatibility).
+- `packages/web/components/store-provider.tsx` — API-backed. Tracks in-flight ops and mirrors the count on `<html data-ops-in-flight="N">` so Playwright tests can deterministically wait via `waitForStoreIdle(page)`.
+- `packages/web/lib/actions.ts` — `act*` functions now return serializable `Operation` descriptors instead of running aggregates inline.
+
+The bundle gets noticeably smaller as a side effect — the agent / aggregate code no longer ships to the browser.
+
 ## Issue Tracker (Milestone 3C)
 
 The `/projects/[id]/issues` page is the legal review and negotiation control surface. After "Run mock reviews" seeds Issue Cards from the Playbook + deterministic QA, the page exposes:

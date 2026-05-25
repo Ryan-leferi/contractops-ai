@@ -18,7 +18,7 @@ export default function DealMemoPage() {
   async function generate() {
     try {
       setError(null);
-      await applyProjectOp(params.id, (s) => actDraftDealMemo(s));
+      await applyProjectOp(params.id, actDraftDealMemo());
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
@@ -27,7 +27,7 @@ export default function DealMemoPage() {
   async function approve() {
     try {
       setError(null);
-      await applyProjectOp(params.id, (s) => actApproveDealMemo(s));
+      await applyProjectOp(params.id, actApproveDealMemo());
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }

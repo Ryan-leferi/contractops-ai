@@ -15,7 +15,8 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { cn, formatDateTime } from "@/lib/utils";
 import type { ExportFile, ExportType, ContractVersion } from "@contractops/schemas";
-import type { AggregateResult, ProjectState } from "@contractops/core";
+import type { ProjectState } from "@contractops/core";
+import type { Operation } from "@/lib/operations";
 
 interface ExportSpec {
   type: ExportType;
@@ -254,10 +255,7 @@ async function downloadExport(
   final: ContractVersion,
   spec: ExportSpec,
   projectId: string,
-  applyProjectOp: (
-    id: string,
-    op: (s: ProjectState) => AggregateResult | Promise<AggregateResult>,
-  ) => Promise<void>,
+  applyProjectOp: (id: string, op: Operation) => Promise<void>,
 ): Promise<void> {
   const res = await fetch("/api/exports/render", {
     method: "POST",
@@ -306,8 +304,9 @@ async function downloadExport(
     summary,
   ].join("\n");
 
-  await applyProjectOp(projectId, (s) =>
-    actCreateExport(s, { export_type: spec.type, content: metaBlurb, file_name }),
+  await applyProjectOp(
+    projectId,
+    actCreateExport({ export_type: spec.type, content: metaBlurb, file_name }),
   );
 }
 

@@ -25,13 +25,14 @@ export default function ContractTypePage() {
   const sourcePackLocked = state.source_pack.locked;
   const playbookTypes = playbooks?.filter((p) => !p.is_custom_marker).map((p) => p.contract_type) ?? [];
 
-  function confirmType(e: React.FormEvent) {
+  async function confirmType(e: React.FormEvent) {
     e.preventDefault();
     if (!confirmedType.trim()) return;
     try {
       setError(null);
-      applyProjectOp(params.id, (s) =>
-        actClassifyAndConfirm(s, {
+      await applyProjectOp(
+        params.id,
+        actClassifyAndConfirm({
           confirmed_type: confirmedType.trim(),
           hint: confirmedType.trim(),
         }),

@@ -25,13 +25,14 @@ export default function IntakePage() {
   const answered = new Set(state.intake_answers.map((a) => a.question_id));
   const remaining = required.filter((q) => !answered.has(q.id)).length;
 
-  function save(questionId: string) {
+  async function save(questionId: string) {
     const value = (draft[questionId] ?? "").trim();
     if (!value) return;
     try {
       setError(null);
-      applyProjectOp(params.id, (s) =>
-        actAnswerIntake(s, { question_id: questionId, value }),
+      await applyProjectOp(
+        params.id,
+        actAnswerIntake({ question_id: questionId, value }),
       );
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));

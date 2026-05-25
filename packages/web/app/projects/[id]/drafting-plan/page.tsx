@@ -18,7 +18,7 @@ export default function DraftingPlanPage() {
   async function generate() {
     try {
       setError(null);
-      await applyProjectOp(params.id, (s) => actDraftDraftingPlan(s));
+      await applyProjectOp(params.id, actDraftDraftingPlan());
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
@@ -27,7 +27,7 @@ export default function DraftingPlanPage() {
   async function approve() {
     try {
       setError(null);
-      await applyProjectOp(params.id, (s) => actApproveDraftingPlan(s));
+      await applyProjectOp(params.id, actApproveDraftingPlan());
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }

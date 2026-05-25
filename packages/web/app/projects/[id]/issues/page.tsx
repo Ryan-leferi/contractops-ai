@@ -114,7 +114,7 @@ export default function IssuesPage() {
   async function runReviews() {
     try {
       setError(null);
-      await applyProjectOp(params.id, (s) => actRunMockReviews(s));
+      await applyProjectOp(params.id, actRunMockReviews());
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
@@ -134,8 +134,9 @@ export default function IssuesPage() {
     const draft = getDraft(card.issue_id);
     try {
       setError(null);
-      await applyProjectOp(params.id, (s) =>
-        actDecideIssue(s, {
+      await applyProjectOp(
+        params.id,
+        actDecideIssue({
           issue_id: card.issue_id,
           decision,
           reason_note: draft.reason_note.trim() || undefined,
@@ -156,8 +157,9 @@ export default function IssuesPage() {
     }
     try {
       setError(null);
-      await applyProjectOp(params.id, (s) =>
-        actDecideIssue(s, {
+      await applyProjectOp(
+        params.id,
+        actDecideIssue({
           issue_id: card.issue_id,
           decision: "partially_accepted",
           partial_note: note,

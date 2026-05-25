@@ -32,7 +32,7 @@ export default function QAPage() {
   async function runQA() {
     try {
       setError(null);
-      await applyProjectOp(params.id, (s) => actRunMockFinalQA(s));
+      await applyProjectOp(params.id, actRunMockFinalQA());
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
@@ -41,7 +41,7 @@ export default function QAPage() {
   async function revise() {
     try {
       setError(null);
-      await applyProjectOp(params.id, (s) => actCreateRevision(s));
+      await applyProjectOp(params.id, actCreateRevision());
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
@@ -51,7 +51,7 @@ export default function QAPage() {
     if (!confirm("Approve this version as FINAL? This authorizes external delivery.")) return;
     try {
       setError(null);
-      await applyProjectOp(params.id, (s) => actApproveFinal(s));
+      await applyProjectOp(params.id, actApproveFinal());
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }

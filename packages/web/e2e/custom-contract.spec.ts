@@ -7,7 +7,8 @@ import { expect, test } from "@playwright/test";
  *  - v0 cannot be generated until the human lawyer approves the Drafting Plan.
  */
 
-test.beforeEach(async ({ page }) => {
+test.beforeEach(async ({ page, request }) => {
+  await request.post("/api/projects/reset");
   await page.goto("/projects");
   await page.evaluate(() => window.localStorage.clear());
   await page.reload();

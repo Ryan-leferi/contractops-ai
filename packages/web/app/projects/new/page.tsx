@@ -2,9 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { useState } from "react";
-import { flushSync } from "react-dom";
 import { useStore } from "@/components/store-provider";
-import { actCreateProject } from "@/lib/actions";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -15,19 +13,19 @@ export default function NewProjectPage() {
   const { createProject } = useStore();
   const [name, setName] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
 
-  function submit(e: React.FormEvent) {
+  async function submit(e: React.FormEvent) {
     e.preventDefault();
-    if (!name.trim()) return;
+    if (!name.trim() || submitting) return;
+    setError(null);
+    setSubmitting(true);
     try {
-      setError(null);
-      let id = "";
-      flushSync(() => {
-        id = createProject(() => actCreateProject(name.trim()));
-      });
+      const id = await createProject(name.trim());
       router.push(`/projects/${id}`);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
+      setSubmitting(false);
     }
   }
 
@@ -58,8 +56,8 @@ export default function NewProjectPage() {
               </div>
             )}
             <div className="flex gap-2">
-              <Button type="submit" disabled={!name.trim()}>
-                Create project
+              <Button type="submit" disabled={!name.trim() || submitting}>
+                {submitting ? "Creating…" : "Create project"}
               </Button>
               <Button type="button" variant="outline" onClick={() => router.push("/projects")}>
                 Cancel
