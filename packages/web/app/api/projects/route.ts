@@ -1,26 +1,32 @@
 /**
  * /api/projects — list summaries, create a new project
- * (Milestones 3D + 3I).
+ * (Milestones 3D + 3I + 3L).
  *
- *   GET  → { projects: ProjectSummary[] }
+ *   GET  → { projects: ProjectSummary[] }   (filtered by membership)
  *   POST { name: string } → 201 { state, audits }
  *
  *   The POST body MUST NOT carry `actor_id`. The server resolves the
  *   actor from the session cookie (see `lib/auth`). If `actor_id`
  *   appears in the body the request is rejected with HTTP 400 +
- *   `OPERATION_ACTOR_ID_FORBIDDEN` so accidental regressions in
- *   client code surface immediately rather than silently
- *   impersonating someone.
+ *   `OPERATION_ACTOR_ID_FORBIDDEN`.
  *
- * The backing store is the process-wide `server-store` (default:
- * in-memory; opt-in file / Postgres). State is lost on server restart
- * for the memory adapter; documented in README.
+ *   3L: GET filters the project list to projects in which the
+ *   resolved actor has an active membership — non-member projects
+ *   are NOT leaked. POST refuses non-lawyer creators with 403
+ *   `NON_LAWYER_CANNOT_CREATE_PROJECT`; the creator is
+ *   auto-granted an `owner_lawyer` membership.
  */
 import { NextResponse } from "next/server";
-import { createProjectInStore, listProjectSummaries } from "@/lib/server-store";
+import {
+  NonLawyerCannotCreateProjectError,
+  createProjectInStore,
+  getProjectState,
+  listProjectSummaries,
+} from "@/lib/server-store";
 import {
   OperationActorIdNotAllowedError,
   DEMO_SESSION_COOKIE_NAME,
+  isProjectVisibleTo,
   resolveActorFromRequest,
 } from "@/lib/auth";
 
@@ -36,8 +42,45 @@ function isInvalidSession(err: unknown): err is { message: string; code: "INVALI
   );
 }
 
-export async function GET() {
-  return NextResponse.json({ projects: await listProjectSummaries() });
+function isNonLawyerCreator(
+  err: unknown,
+): err is { message: string; code: "NON_LAWYER_CANNOT_CREATE_PROJECT" } {
+  return (
+    typeof err === "object" &&
+    err !== null &&
+    (err as { code?: unknown }).code === "NON_LAWYER_CANNOT_CREATE_PROJECT"
+  );
+}
+
+export async function GET(request: Request) {
+  let actor;
+  try {
+    actor = await resolveActorFromRequest(request);
+  } catch (err) {
+    if (isInvalidSession(err)) {
+      const res = NextResponse.json(
+        { error: err.message, code: err.code },
+        { status: 401 },
+      );
+      res.cookies.set(DEMO_SESSION_COOKIE_NAME, "", { path: "/", maxAge: 0 });
+      return res;
+    }
+    throw err;
+  }
+
+  // Visibility filter: load each project's state and keep only those
+  // where the actor has an active membership. N+1 reads; acceptable
+  // for MVP. A future milestone moves memberships to a normalized
+  // index table so this becomes a single join (see ADR-019).
+  const all = await listProjectSummaries();
+  const visible = [];
+  for (const summary of all) {
+    const state = await getProjectState(summary.id);
+    if (state && isProjectVisibleTo(state, actor.id)) {
+      visible.push(summary);
+    }
+  }
+  return NextResponse.json({ projects: visible });
 }
 
 export async function POST(request: Request) {
@@ -50,9 +93,7 @@ export async function POST(request: Request) {
       { status: 400 },
     );
   }
-  // Reject body.actor_id (Milestone 3I). The session boundary is the
-  // single source of "who"; accepting a client-provided actor_id
-  // would let any caller impersonate anyone in the registry.
+  // Reject body.actor_id (Milestone 3I).
   if ("actor_id" in body) {
     const err = new OperationActorIdNotAllowedError();
     return NextResponse.json({ error: err.message, code: err.code }, { status: 400 });
@@ -80,6 +121,19 @@ export async function POST(request: Request) {
     throw err;
   }
 
-  const { state, audits } = await createProjectInStore(name.trim(), actor);
-  return NextResponse.json({ state, audits }, { status: 201 });
+  try {
+    const { state, audits } = await createProjectInStore(name.trim(), actor);
+    return NextResponse.json({ state, audits }, { status: 201 });
+  } catch (err) {
+    if (err instanceof NonLawyerCannotCreateProjectError || isNonLawyerCreator(err)) {
+      return NextResponse.json(
+        {
+          error: (err as Error).message,
+          code: "NON_LAWYER_CANNOT_CREATE_PROJECT",
+        },
+        { status: 403 },
+      );
+    }
+    throw err;
+  }
 }

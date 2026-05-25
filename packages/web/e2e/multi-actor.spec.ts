@@ -123,6 +123,21 @@ test.describe("Multi-actor demo (lawyer_kim ↔ lawyer_park, business_choi block
     await waitForStoreIdle(pageA);
     await expect(pageA.getByTestId("dash-rejected")).toContainText("1");
 
+    // ── Milestone 3L: Kim (owner_lawyer) grants memberships ────────
+    // park = reviewer_lawyer (so park can decide_issue)
+    // choi = business_contributor (so choi can view; decide is denied
+    //        by the permission matrix in the assertion below)
+    const grantPark = await contextA.request.post(
+      `/api/projects/${projectId}/memberships`,
+      { data: { actor_id: "lawyer_park", project_role: "reviewer_lawyer" } },
+    );
+    expect(grantPark.status()).toBe(201);
+    const grantChoi = await contextA.request.post(
+      `/api/projects/${projectId}/memberships`,
+      { data: { actor_id: "business_choi", project_role: "business_contributor" } },
+    );
+    expect(grantChoi.status()).toBe(201);
+
     // ── Context B: lawyer_park overrules Kim's rejection ───────────
     const contextB = await browser.newContext();
     await setDemoActorCookie(contextB, "lawyer_park");
@@ -201,8 +216,12 @@ test.describe("Multi-actor demo (lawyer_kim ↔ lawyer_park, business_choi block
     );
     expect(pendingCard).toBeDefined();
 
-    // ── C decides a card via her OWN request context (cookie =
-    //    business_choi). No body.actor_id. Server's role guard fires.
+    // ── C (business_contributor) decides a card via her OWN request
+    //    context (cookie = business_choi, no body.actor_id).
+    //    Milestone 3L: the project RBAC layer fires BEFORE the core
+    //    role guard — Choi is a member (business_contributor) but
+    //    that role lacks `decide_issue`, so the server returns
+    //    403 PROJECT_PERMISSION_DENIED.
     const refused = await contextC.request.post(
       `/api/projects/${projectId}/operations`,
       {
@@ -212,10 +231,9 @@ test.describe("Multi-actor demo (lawyer_kim ↔ lawyer_park, business_choi block
         },
       },
     );
-    expect(refused.status()).toBe(422);
+    expect(refused.status()).toBe(403);
     const refusedBody = (await refused.json()) as { error: string; code: string };
-    expect(refusedBody.code).toBe("OPERATION_REJECTED");
-    expect(refusedBody.error.toLowerCase()).toContain("lawyer");
+    expect(refusedBody.code).toBe("PROJECT_PERMISSION_DENIED");
 
     // ── C attempts IMPERSONATION via body.actor_id="lawyer_kim".
     //    Milestone 3I rejects body.actor_id outright — server returns

@@ -66,6 +66,24 @@ test("Issue decision buttons disable for business_choi, re-enable for lawyer_par
   await expect(page.getByTestId("project-name")).toHaveText("UI guard demo");
   const projectId = page.url().split("/projects/")[1]!;
 
+  // Milestone 3L: Kim (owner_lawyer) grants memberships up-front so
+  // the dropdown-switches later in the test land on actors who CAN
+  // open the project. Park gets owner_lawyer because the test runs
+  // approve_final as park at the end (reviewer_lawyer lacks that
+  // permission). Choi gets business_contributor — enough to view
+  // the page; decide / approve / export-internal are correctly
+  // denied by the matrix.
+  const grantPark = await page.context().request.post(
+    `/api/projects/${projectId}/memberships`,
+    { data: { actor_id: "lawyer_park", project_role: "owner_lawyer" } },
+  );
+  await expect.poll(() => grantPark.status()).toBe(201);
+  const grantChoi = await page.context().request.post(
+    `/api/projects/${projectId}/memberships`,
+    { data: { actor_id: "business_choi", project_role: "business_contributor" } },
+  );
+  await expect.poll(() => grantChoi.status()).toBe(201);
+
   await page.goto(`/projects/${projectId}/sources`);
   await page.fill('[data-testid="source-file-name"]', "proposal.pdf");
   await page.click('[data-testid="add-source-btn"]');
@@ -182,15 +200,20 @@ test("Issue decision buttons disable for business_choi, re-enable for lawyer_par
   // server resolves the actor from the session cookie. Use the
   // page's own request context so the business_choi cookie set by
   // the dropdown above is sent automatically.
+  // Milestone 3L: Choi is now a project member (business_contributor)
+  // but `approve_final` is owner_lawyer-only — the project RBAC layer
+  // returns 403 PROJECT_PERMISSION_DENIED BEFORE reaching the core
+  // role guard. The UI-button-disabled assertion above is what we
+  // expose to the user; this is the server's authoritative refusal.
   const blockedResp = await page.context().request.post(
     `/api/projects/${projectId}/operations`,
     {
       data: { name: "approve_final", args: {} },
     },
   );
-  expect(blockedResp.status()).toBe(422);
-  const blockedBody = (await blockedResp.json()) as { error: string };
-  expect(blockedBody.error.toLowerCase()).toContain("lawyer");
+  expect(blockedResp.status()).toBe(403);
+  const blockedBody = (await blockedResp.json()) as { error: string; code: string };
+  expect(blockedBody.code).toBe("PROJECT_PERMISSION_DENIED");
 
   // 8b. body.actor_id is rejected outright — even attempting to
   // pose as a lawyer while logged in as business_choi must fail
@@ -239,6 +262,15 @@ test("export buttons disable for business_choi even when a final version exists"
   await page.click('button[type="submit"]');
   await expect(page.getByTestId("project-name")).toHaveText("Export guard demo");
   const projectId = page.url().split("/projects/")[1]!;
+
+  // Milestone 3L: Choi needs membership to even open the project.
+  // business_contributor gives view + export_clean; commentary +
+  // negotiation export are correctly denied by the matrix.
+  const grantChoi = await page.context().request.post(
+    `/api/projects/${projectId}/memberships`,
+    { data: { actor_id: "business_choi", project_role: "business_contributor" } },
+  );
+  await expect.poll(() => grantChoi.status()).toBe(201);
 
   await page.goto(`/projects/${projectId}/sources`);
   await page.fill('[data-testid="source-file-name"]', "p.pdf");

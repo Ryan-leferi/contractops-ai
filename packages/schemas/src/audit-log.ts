@@ -15,6 +15,9 @@ export const auditEventTypeSchema = z.enum([
   "deterministic_qa_run",
   "final_approved",
   "exported",
+  // Milestone 3L — project membership changes
+  "membership_created",
+  "membership_disabled",
 ]);
 export type AuditEventType = z.infer<typeof auditEventTypeSchema>;
 

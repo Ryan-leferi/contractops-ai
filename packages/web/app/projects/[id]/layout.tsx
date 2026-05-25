@@ -43,6 +43,14 @@ const STEPS: Step[] = [
   },
   { href: "/qa", label: "9. QA & Final", isDone: (s) => s.contract_versions.some((v) => v.final) },
   { href: "/exports", label: "10. Exports", isDone: (s) => s.exports.length > 0 },
+  {
+    href: "/members",
+    label: "Members",
+    // Always "done" — membership is metadata, not a workflow gate.
+    // The owner_lawyer membership is auto-granted at creation, so
+    // every project starts with ≥ 1 active membership.
+    isDone: (s) => (s.memberships ?? []).some((m) => m.disabled_at === null),
+  },
 ];
 
 export default function ProjectLayout({ children }: { children: ReactNode }) {

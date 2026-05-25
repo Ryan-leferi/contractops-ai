@@ -30,11 +30,28 @@ import {
   type ExportRenderInput,
   type ExportRenderType,
 } from "@contractops/core/export-renderer";
+import { getProjectState } from "@/lib/server-store";
+import {
+  DEMO_SESSION_COOKIE_NAME,
+  isProjectAccessDenied,
+  isProjectPermissionDenied,
+  mapExportTypeToPermission,
+  requireProjectPermission,
+  resolveActorFromRequest,
+} from "@/lib/auth";
 
 // Force the Node.js runtime — the `docx` library uses Buffer / Node APIs and
 // is incompatible with the Edge runtime.
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+
+function isInvalidSession(err: unknown): err is { message: string; code: "INVALID_SESSION" } {
+  return (
+    typeof err === "object" &&
+    err !== null &&
+    (err as { code?: unknown }).code === "INVALID_SESSION"
+  );
+}
 
 const SUPPORTED_TYPES: ReadonlySet<ExportRenderType> = new Set([
   "clean_docx",
@@ -72,6 +89,63 @@ export async function POST(request: Request) {
       },
       { status: 400 },
     );
+  }
+
+  // ── 3L: project-level authorization ─────────────────────────────
+  // The client posts a ProjectState body for the renderer's input,
+  // but we use the SERVER-LOADED state for the membership check —
+  // a client cannot forge their way past authorization by editing
+  // the posted state's memberships field. Render input still comes
+  // from the body to preserve the existing 3A/3B contract.
+  let actor;
+  try {
+    actor = await resolveActorFromRequest(request);
+  } catch (err) {
+    if (isInvalidSession(err)) {
+      const res = NextResponse.json(
+        { error: err.message, code: err.code },
+        { status: 401 },
+      );
+      res.cookies.set(DEMO_SESSION_COOKIE_NAME, "", { path: "/", maxAge: 0 });
+      return res;
+    }
+    throw err;
+  }
+  const postedState = body.project_state;
+  const postedProjectId =
+    isObject(postedState) && isObject(postedState.project) && typeof postedState.project.id === "string"
+      ? postedState.project.id
+      : null;
+  if (!postedProjectId) {
+    return NextResponse.json(
+      { error: "project_state.project.id is required for authorization", code: "BAD_PROJECT" },
+      { status: 400 },
+    );
+  }
+  const serverState = await getProjectState(postedProjectId);
+  if (!serverState) {
+    return NextResponse.json(
+      { error: `project not found: ${postedProjectId}`, code: "PROJECT_NOT_FOUND" },
+      { status: 404 },
+    );
+  }
+  const requiredPermission = mapExportTypeToPermission(export_type);
+  if (requiredPermission === null) {
+    return NextResponse.json(
+      { error: `export_type '${export_type}' is not mapped to a permission`, code: "EXPORT_PERMISSION_UNMAPPED" },
+      { status: 403 },
+    );
+  }
+  try {
+    requireProjectPermission(serverState, actor.id, requiredPermission);
+  } catch (err) {
+    if (isProjectAccessDenied(err) || isProjectPermissionDenied(err)) {
+      return NextResponse.json(
+        { error: err.message, code: err.code, export_type },
+        { status: 403 },
+      );
+    }
+    throw err;
   }
 
   const renderInput = extractRenderInput(body.project_state);

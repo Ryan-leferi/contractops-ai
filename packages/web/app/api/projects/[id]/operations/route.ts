@@ -1,42 +1,47 @@
 /**
  * /api/projects/[id]/operations — apply a single workflow operation
- * (Milestones 3D + 3I).
+ * (Milestones 3D + 3I + 3L).
  *
  *   POST { name: OperationName, args: Operation["args"] }
  *     → 200 { state, audits }
  *     → 400 if body / operation name is malformed
  *     → 400 if body.actor_id is present (OPERATION_ACTOR_ID_FORBIDDEN)
  *     → 401 if a session cookie is present but invalid
+ *     → 403 if actor lacks project membership (3L) or permission (3L)
  *     → 404 if project not found
  *     → 422 if the aggregate refused (invalid transition, missing
  *           prerequisite, pending issues blocking final approval,
- *           role guard fired, etc.)
+ *           core role guard fired, etc.)
  *
- *   The request body MUST NOT carry `actor_id`. The actor is resolved
- *   from the session cookie via `resolveActorFromRequest`. Accepting
- *   body.actor_id would let the browser impersonate anyone in the
- *   registry just by hand-editing a single JSON field.
- *
- * The route is a thin pass-through to `applyOperationToStore`. All
- * workflow invariants stay enforced in @contractops/core.
+ *   3L: BEFORE invoking the aggregate dispatcher, the route loads the
+ *   project state, looks up the actor's membership, and checks the
+ *   permission mapped from the operation name (see
+ *   `mapOperationToPermission`). The membership check fires before
+ *   the existing core role guard — so an attempt by a non-member
+ *   lawyer gets HTTP 403 (`PROJECT_ACCESS_DENIED`) instead of
+ *   reaching `core.aggApproveDealMemo`.
  */
 import { NextResponse } from "next/server";
 import {
   ProjectNotFoundError,
   UnknownOperationError,
   applyOperationToStore,
+  getProjectState,
   parseOperationOrThrow,
 } from "@/lib/server-store";
 import {
   DEMO_SESSION_COOKIE_NAME,
   OperationActorIdNotAllowedError,
+  isProjectAccessDenied,
+  isProjectPermissionDenied,
+  mapOperationToPermission,
+  requireProjectPermission,
   resolveActorFromRequest,
 } from "@/lib/auth";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-/** See `app/api/auth/session/route.ts` for why we match by code, not instanceof. */
 function isInvalidSession(err: unknown): err is { message: string; code: "INVALID_SESSION" } {
   return (
     typeof err === "object" &&
@@ -92,8 +97,6 @@ export async function POST(
     );
   }
 
-  // Resolve the actor from the session cookie. No fallback to a
-  // client-supplied id — the auth boundary is authoritative.
   let actor;
   try {
     actor = await resolveActorFromRequest(request);
@@ -109,6 +112,42 @@ export async function POST(
     throw err;
   }
 
+  // ── 3L: project-level authorization ─────────────────────────────
+  // Loaded BEFORE applyOperationToStore so we never persist state
+  // mutations for a denied request. The dispatcher's own core role
+  // guard (e.g. `aggApproveDealMemo` checks `actor.role === "human_lawyer"`)
+  // remains as a defense-in-depth second line.
+  const state = await getProjectState(ctx.params.id);
+  if (!state) {
+    return NextResponse.json(
+      { error: `project not found: ${ctx.params.id}`, code: "PROJECT_NOT_FOUND" },
+      { status: 404 },
+    );
+  }
+  const requiredPermission = mapOperationToPermission(op);
+  if (requiredPermission === null) {
+    // Operation isn't covered by the matrix — fail closed.
+    return NextResponse.json(
+      {
+        error: `operation '${op.name}' is not mapped to a permission; denied by default`,
+        code: "OPERATION_PERMISSION_UNMAPPED",
+        op: op.name,
+      },
+      { status: 403 },
+    );
+  }
+  try {
+    requireProjectPermission(state, actor.id, requiredPermission);
+  } catch (err) {
+    if (isProjectAccessDenied(err) || isProjectPermissionDenied(err)) {
+      return NextResponse.json(
+        { error: err.message, code: err.code, op: op.name },
+        { status: 403 },
+      );
+    }
+    throw err;
+  }
+
   try {
     const result = await applyOperationToStore(ctx.params.id, op, actor);
     return NextResponse.json(result);
@@ -120,9 +159,8 @@ export async function POST(
       );
     }
     // Aggregate-layer errors (invalid transition, missing prerequisite,
-    // pending issues blocking final, role guards, etc.) surface as 422
-    // so the browser can distinguish "your input was malformed" (400)
-    // from "your input was well-formed but the workflow refused" (422).
+    // pending issues blocking final, core role guards, etc.) surface
+    // as 422.
     const message = err instanceof Error ? err.message : String(err);
     return NextResponse.json(
       { error: message, code: "OPERATION_REJECTED", op: op.name },

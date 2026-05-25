@@ -11,6 +11,7 @@ import type {
   IssueDecisionHistoryEntry,
   Playbook,
   Project,
+  ProjectMembership,
   SourceDocument,
   SourceDocumentContent,
   SourcePack,
@@ -56,6 +57,19 @@ export interface ProjectState {
    * entry from this list (PLATFORM_BRIEF.md §5 rule 7).
    */
   decision_history: IssueDecisionHistoryEntry[];
+  /**
+   * Project-scoped membership list (Milestone 3L). Each entry is a
+   * (actor_id, project_role) triple plus provenance + soft-delete
+   * `disabled_at`. Membership is the SERVER-SIDE source of truth for
+   * RBAC — the route handlers call `requireProjectMembership` on
+   * every project read / write.
+   *
+   * Stored INSIDE ProjectState (rather than a separate journal) so
+   * memory / file / postgres adapters all work without new methods.
+   * The trade-off + future migration to a normalized table are
+   * documented in ADR-019.
+   */
+  memberships: ProjectMembership[];
 }
 
 export function emptyProjectState(
@@ -79,5 +93,6 @@ export function emptyProjectState(
     exports: [],
     qa_runs: [],
     decision_history: [],
+    memberships: [],
   };
 }

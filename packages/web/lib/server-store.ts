@@ -14,13 +14,17 @@
  * SDK isolation test in `packages/core/tests/no-sdk-imports.test.ts`.
  */
 
+import { randomUUID } from "node:crypto";
 import * as core from "@contractops/core";
 import type {
   Actor,
   AuditLog,
   ExportType,
   IssueDecisionHistoryEntry,
+  ProjectMembership,
+  ProjectRole,
 } from "@contractops/schemas";
+import { isLawyerProjectRole } from "@contractops/schemas";
 
 import {
   buildServerAggregateContext,
@@ -89,12 +93,212 @@ export async function createProjectInStore(
 ): Promise<ApplyResult> {
   ensureServerPromptsLoaded();
   const env = makeServerEnv();
-  // Project creation accepts any actor (no role check in core).
   const createdBy = actor ?? getDefaultLawyer();
+
+  // 3L: project creation requires a human_lawyer actor so the
+  // creator can be auto-granted an `owner_lawyer` membership. A
+  // non-lawyer creator is refused at boot rather than silently
+  // creating an unmanageable project (no one could ever approve
+  // anything). The few server-side test callers that pass a
+  // business actor are expected to fail; they are updated to use
+  // a lawyer explicitly.
+  if (createdBy.role !== "human_lawyer") {
+    throw new NonLawyerCannotCreateProjectError(createdBy.id);
+  }
+
   const res = core.aggCreateProject({ name, created_by: createdBy }, env);
   const creationAudit = res.audits[0]!;
-  await adapter().createProject(res.state, creationAudit);
-  return { state: res.state, audits: res.audits };
+
+  // Auto-grant the creator an owner_lawyer membership. The membership
+  // lives INSIDE ProjectState (ADR-019) so the persistence adapter's
+  // existing `createProject(state, creationAudit)` call covers it
+  // atomically — no second write needed.
+  const ownerMembership: ProjectMembership = {
+    id: `mem_${randomUUID()}`,
+    project_id: res.state.project.id,
+    actor_id: createdBy.id,
+    project_role: "owner_lawyer",
+    created_at: res.state.project.created_at,
+    created_by: createdBy.id,
+    disabled_at: null,
+  };
+  const stateWithOwner: core.ProjectState = {
+    ...res.state,
+    memberships: [...(res.state.memberships ?? []), ownerMembership],
+  };
+
+  // Membership grant is its own audit row so the audit trail shows
+  // "project_created → membership_created" for every project.
+  const membershipAudit: AuditLog = {
+    id: `au_${randomUUID()}`,
+    project_id: stateWithOwner.project.id,
+    actor: createdBy.id,
+    event_type: "membership_created",
+    ref_id: ownerMembership.id,
+    timestamp: stateWithOwner.project.created_at,
+    payload: {
+      actor_id: createdBy.id,
+      project_role: "owner_lawyer",
+      auto_granted: true,
+    },
+  };
+
+  await adapter().createProject(stateWithOwner, creationAudit);
+  await adapter().appendAuditLog(stateWithOwner.project.id, membershipAudit);
+
+  return {
+    state: stateWithOwner,
+    audits: [...res.audits, membershipAudit],
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Project membership management (Milestone 3L)
+// ─────────────────────────────────────────────────────────────────────
+
+export interface AddMembershipInput {
+  readonly actor: Actor; // target actor (id + role + display_name)
+  readonly project_role: ProjectRole;
+}
+
+/**
+ * Append a new membership to a project. The route handler has
+ * already verified the CALLER's `manage_memberships` permission;
+ * this helper enforces the global-role↔project-role invariant
+ * (lawyer roles require human_lawyer actors) and rejects duplicate
+ * active memberships.
+ *
+ * Returns the persisted membership + the audit entry, so the route
+ * can echo both to the client.
+ */
+export async function addMembershipToProject(
+  projectId: string,
+  input: AddMembershipInput,
+  grantedBy: Actor,
+): Promise<{ membership: ProjectMembership; audit: AuditLog }> {
+  const a = adapter();
+  const current = await a.getProjectState(projectId);
+  if (!current) throw new ProjectNotFoundError(projectId);
+
+  // Lawyer project_roles require a human_lawyer global role.
+  if (isLawyerProjectRole(input.project_role) && input.actor.role !== "human_lawyer") {
+    throw new ProjectRoleRequiresLawyerError(input.actor.id, input.project_role);
+  }
+
+  // Reject duplicate active membership for the same actor.
+  const existing = (current.memberships ?? []).find(
+    (m) => m.actor_id === input.actor.id && m.disabled_at === null,
+  );
+  if (existing) {
+    throw new ActorAlreadyMemberError(projectId, input.actor.id);
+  }
+
+  const now = new Date().toISOString();
+  const membership: ProjectMembership = {
+    id: `mem_${randomUUID()}`,
+    project_id: projectId,
+    actor_id: input.actor.id,
+    project_role: input.project_role,
+    created_at: now,
+    created_by: grantedBy.id,
+    disabled_at: null,
+  };
+  const next: core.ProjectState = {
+    ...current,
+    memberships: [...(current.memberships ?? []), membership],
+  };
+
+  const audit: AuditLog = {
+    id: `au_${randomUUID()}`,
+    project_id: projectId,
+    actor: grantedBy.id,
+    event_type: "membership_created",
+    ref_id: membership.id,
+    timestamp: now,
+    payload: {
+      actor_id: input.actor.id,
+      project_role: input.project_role,
+      auto_granted: false,
+    },
+  };
+
+  await a.saveProjectState(next);
+  await a.appendAuditLog(projectId, audit);
+  return { membership, audit };
+}
+
+/**
+ * Mark a membership as disabled (soft-delete). The route handler
+ * has already verified the CALLER's `manage_memberships` permission;
+ * this helper additionally REFUSES to disable the LAST active
+ * `owner_lawyer` of a project — that would leave it unmanageable.
+ *
+ * Returns the now-disabled membership + audit row.
+ */
+export async function disableMembershipInProject(
+  projectId: string,
+  membershipId: string,
+  disabledBy: Actor,
+): Promise<{ membership: ProjectMembership; audit: AuditLog }> {
+  const a = adapter();
+  const current = await a.getProjectState(projectId);
+  if (!current) throw new ProjectNotFoundError(projectId);
+
+  const target = (current.memberships ?? []).find((m) => m.id === membershipId);
+  if (!target) throw new MembershipNotFoundError(projectId, membershipId);
+  if (target.disabled_at !== null) {
+    // Idempotent — return the same row.
+    return {
+      membership: target,
+      audit: {
+        id: `au_${randomUUID()}`,
+        project_id: projectId,
+        actor: disabledBy.id,
+        event_type: "membership_disabled",
+        ref_id: target.id,
+        timestamp: new Date().toISOString(),
+        payload: { actor_id: target.actor_id, idempotent: true },
+      },
+    };
+  }
+
+  // Refuse to remove the last active owner_lawyer.
+  if (target.project_role === "owner_lawyer") {
+    const remainingOwners = (current.memberships ?? []).filter(
+      (m) =>
+        m.project_role === "owner_lawyer" &&
+        m.disabled_at === null &&
+        m.id !== membershipId,
+    );
+    if (remainingOwners.length === 0) {
+      throw new CannotRemoveLastOwnerError(projectId, membershipId);
+    }
+  }
+
+  const now = new Date().toISOString();
+  const disabled: ProjectMembership = { ...target, disabled_at: now };
+  const next: core.ProjectState = {
+    ...current,
+    memberships: (current.memberships ?? []).map((m) =>
+      m.id === membershipId ? disabled : m,
+    ),
+  };
+  const audit: AuditLog = {
+    id: `au_${randomUUID()}`,
+    project_id: projectId,
+    actor: disabledBy.id,
+    event_type: "membership_disabled",
+    ref_id: disabled.id,
+    timestamp: now,
+    payload: {
+      actor_id: disabled.actor_id,
+      project_role: disabled.project_role,
+    },
+  };
+
+  await a.saveProjectState(next);
+  await a.appendAuditLog(projectId, audit);
+  return { membership: disabled, audit };
 }
 
 /**
@@ -310,6 +514,58 @@ export class UnknownOperationError extends Error {
   readonly code = "UNKNOWN_OPERATION";
   constructor(name: unknown) {
     super(`unknown operation name: ${JSON.stringify(name)}`);
+  }
+}
+
+// ── Milestone 3L errors ───────────────────────────────────────────────
+
+export class NonLawyerCannotCreateProjectError extends Error {
+  readonly code = "NON_LAWYER_CANNOT_CREATE_PROJECT";
+  constructor(public readonly actor_id: string) {
+    super(
+      `actor "${actor_id}" cannot create a project: only human_lawyer actors ` +
+        `may create projects (the creator becomes owner_lawyer). Business ` +
+        `actors should be added to an existing project by an owner.`,
+    );
+  }
+}
+
+export class ActorAlreadyMemberError extends Error {
+  readonly code = "ACTOR_ALREADY_MEMBER";
+  constructor(public readonly project_id: string, public readonly actor_id: string) {
+    super(
+      `actor "${actor_id}" already has an active membership in project "${project_id}"`,
+    );
+  }
+}
+
+export class ProjectRoleRequiresLawyerError extends Error {
+  readonly code = "PROJECT_ROLE_REQUIRES_LAWYER";
+  constructor(
+    public readonly actor_id: string,
+    public readonly project_role: string,
+  ) {
+    super(
+      `actor "${actor_id}" cannot be granted project_role "${project_role}": ` +
+        `that role requires Actor.role === "human_lawyer".`,
+    );
+  }
+}
+
+export class MembershipNotFoundError extends Error {
+  readonly code = "MEMBERSHIP_NOT_FOUND";
+  constructor(public readonly project_id: string, public readonly membership_id: string) {
+    super(`membership "${membership_id}" not found in project "${project_id}"`);
+  }
+}
+
+export class CannotRemoveLastOwnerError extends Error {
+  readonly code = "CANNOT_REMOVE_LAST_OWNER";
+  constructor(public readonly project_id: string, public readonly membership_id: string) {
+    super(
+      `cannot disable membership "${membership_id}": it is the last active ` +
+        `owner_lawyer of project "${project_id}". Add another owner first.`,
+    );
   }
 }
 

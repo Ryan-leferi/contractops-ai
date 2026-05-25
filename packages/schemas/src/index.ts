@@ -17,3 +17,4 @@ export * from "./agent-outputs";
 export * from "./human-decision";
 export * from "./export";
 export * from "./audit-log";
+export * from "./project-membership";

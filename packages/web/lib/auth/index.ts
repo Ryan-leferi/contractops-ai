@@ -83,3 +83,24 @@ export {
   normalizeEmailForEvent,
   recordAuthEvent,
 } from "./auth-events";
+
+// ── Milestone 3L: project membership + RBAC ──
+
+export {
+  type Permission,
+  PROJECT_ROLE_MATRIX,
+  can,
+  mapExportTypeToPermission,
+  mapOperationToPermission,
+} from "./permissions";
+
+export {
+  ProjectAccessDeniedError,
+  ProjectPermissionDeniedError,
+  isProjectAccessDenied,
+  isProjectPermissionDenied,
+  isProjectVisibleTo,
+  loadActiveMembership,
+  requireProjectMembership,
+  requireProjectPermission,
+} from "./project-authz";
