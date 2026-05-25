@@ -1,45 +1,45 @@
 /**
- * Server-side AggregateContext builder (Milestone 3D).
+ * Server-side AggregateContext builder (Milestones 3D + 3F).
  *
  * The operations API route calls `core.agg*` functions to drive the
  * workflow. Each `agg*` call needs an AggregateContext: provider, env,
- * actor, env_config, and a per-role provider router.
+ * actor, env_config, and a per-role provider router. Real LLM providers
+ * are instantiated directly here (not via the browser proxy hop) since
+ * we ARE on the server.
  *
- * The legacy client-side builder in `lib/actions.ts` instantiates HTTP
- * proxy providers because the browser cannot import the OpenAI /
- * Anthropic SDKs directly. Here we ARE the server, so we instantiate the
- * real providers directly via `selectProviderByName` — no extra hop.
+ * Milestone 3F: the actor is no longer a hardcoded `DEMO_LAWYER`. It is
+ * resolved from the demo actor registry based on the client-supplied
+ * `actor_id` (or the registry default for callers that don't pass one).
+ * Lawyer-only aggregate ops still enforce `actor.role === "human_lawyer"`
+ * inside @contractops/core — selecting `business_choi` therefore makes
+ * approve_* / decide_issue / classify_and_confirm throw as designed.
  *
- * SERVER ONLY. Any file that imports this transitively pulls in
- * `openai` and `@anthropic-ai/sdk` (via `selectProviderByName`), so it
- * must never be imported from a client component or the SDK isolation
- * test will fail.
+ * SERVER ONLY. Importing this file transitively pulls in the OpenAI and
+ * Anthropic SDKs via `selectProviderByName`, so it must never be loaded
+ * from a client component (enforced by the SDK isolation test).
  */
 import * as core from "@contractops/core";
 import type { Actor, AgentRole } from "@contractops/schemas";
 import { buildPlaybookCannedResponses } from "./actions";
+import { DEMO_ACTOR_REGISTRY, DEFAULT_DEMO_ACTOR_ID } from "./demo-actors";
 
-/** Demo lawyer used for every server-side action that needs an actor. */
-const DEMO_LAWYER: Actor = {
-  id: "lawyer_demo",
-  role: "human_lawyer",
-  display_name: "Demo Lawyer",
-};
-
-/** Demo user used for source-upload + intake-answer actions. */
-const DEMO_USER: Actor = {
-  id: "user_demo",
-  role: "user",
-  display_name: "Demo User",
-};
-
-export function getDemoLawyer(): Actor {
-  return DEMO_LAWYER;
+/**
+ * Backward-compat aliases used by server-store and the existing
+ * fallback callers. Both resolve to the demo registry entries so
+ * `actions.ts`'s `DEMO_LAWYER` / `DEMO_USER` constants stay in sync.
+ */
+export function getDefaultLawyer(): Actor {
+  return DEMO_ACTOR_REGISTRY[DEFAULT_DEMO_ACTOR_ID];
+}
+export function getDefaultBusinessUser(): Actor {
+  return DEMO_ACTOR_REGISTRY.business_choi;
 }
 
-export function getDemoUser(): Actor {
-  return DEMO_USER;
-}
+// Older name kept so existing internal call-sites compile until the
+// 3F refactor finishes propagating. New code should call
+// `getDefaultLawyer()` directly.
+export const getDemoLawyer = getDefaultLawyer;
+export const getDemoUser = getDefaultBusinessUser;
 
 /** Server clock + id factory. */
 export function makeServerEnv(): core.Env {
@@ -55,24 +55,14 @@ export function makeServerEnv(): core.Env {
 }
 
 /**
- * Build an AggregateContext for the server. Falls back to the mock
- * provider for any role that is not on the real-mode allowlist.
- *
- * Provider routing rules (mirror the client-side proxy behavior so the
- * same role escalation rules apply whether the call originates in the
- * browser or in an operations API route):
- *
- *   - `deal_memo_drafter` → OpenAI if USE_REAL_LLM + "openai" allowed
- *   - `counterparty_reviewer` → Anthropic if USE_REAL_LLM + "anthropic" allowed
- *   - everything else → MockProvider
- *
- * If real-mode env is misconfigured, we swallow the construction error
- * and quietly fall back to the mock provider — running the workflow
- * must not crash because of an env hiccup. The mock badge in the agent
- * runs panel surfaces the fallback.
+ * Build an AggregateContext for the server. The actor must be one of
+ * the demo registry entries (the API route validates this before
+ * calling us). Falls back to the mock provider for any role that is
+ * not on the real-mode allowlist.
  */
 export function buildServerAggregateContext(
   state: core.ProjectState,
+  actor: Actor,
 ): core.AggregateContext {
   const mockProvider = core.createMockProvider({
     json_responses: buildPlaybookCannedResponses(state),
@@ -101,7 +91,7 @@ export function buildServerAggregateContext(
     provider: mockProvider,
     env_config: envConfig,
     env: makeServerEnv(),
-    actor: DEMO_LAWYER,
+    actor,
     getProvider: (role) => tryReal(role) ?? mockProvider,
   };
 }

@@ -13,6 +13,13 @@ import type * as S from "@contractops/schemas";
 import type * as core from "@contractops/core";
 import { emptyStore, type AppStore } from "@/lib/actions";
 import type { Operation } from "@/lib/operations";
+import {
+  DEFAULT_DEMO_ACTOR_ID,
+  isKnownDemoActorId,
+  type DemoActorId,
+} from "@/lib/demo-actors";
+
+const ACTOR_STORAGE_KEY = "contractops:demo-actor";
 
 /**
  * API-backed application store (Milestone 3D).
@@ -56,6 +63,16 @@ interface StoreContextValue {
   refreshProject: (projectId: string) => Promise<void>;
   /** Re-fetch the list of projects (and lazily populate any missing). */
   refreshProjects: () => Promise<void>;
+  /**
+   * Currently selected demo actor (Milestone 3F). Every API call sends
+   * `actor_id` so the server attributes the action correctly. The
+   * server validates the id against the demo registry — unknown ids
+   * are rejected with HTTP 400.
+   *
+   * NOT AUTHENTICATION. This is a name-picker for the demo only.
+   */
+  actorId: DemoActorId;
+  setActorId: (id: DemoActorId) => void;
 }
 
 const StoreContext = createContext<StoreContextValue | null>(null);
@@ -81,11 +98,12 @@ async function apiGet(
 
 async function apiCreate(
   name: string,
+  actorId: DemoActorId,
 ): Promise<{ state: core.ProjectState; audits: S.AuditLog[] }> {
   const res = await fetch("/api/projects", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ name }),
+    body: JSON.stringify({ name, actor_id: actorId }),
   });
   if (!res.ok) {
     let detail = `HTTP ${res.status}`;
@@ -103,11 +121,12 @@ async function apiCreate(
 async function apiOperation(
   projectId: string,
   op: Operation,
+  actorId: DemoActorId,
 ): Promise<{ state: core.ProjectState; audits: S.AuditLog[] }> {
   const res = await fetch(`/api/projects/${projectId}/operations`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify(op),
+    body: JSON.stringify({ ...op, actor_id: actorId }),
   });
   if (!res.ok) {
     let detail = `HTTP ${res.status}`;
@@ -145,6 +164,28 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const storeRef = useRef<AppStore>(store);
   storeRef.current = store;
   const [hydrated, setHydrated] = useState(false);
+
+  // Selected demo actor (Milestone 3F). Hydrates from localStorage on
+  // mount; falls back to the registry default. NEVER trusted by the
+  // server — every request re-validates the id against the registry.
+  const [actorId, setActorIdState] = useState<DemoActorId>(DEFAULT_DEMO_ACTOR_ID);
+  const actorIdRef = useRef<DemoActorId>(actorId);
+  actorIdRef.current = actorId;
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const stored = window.localStorage.getItem(ACTOR_STORAGE_KEY);
+    if (stored && isKnownDemoActorId(stored)) {
+      setActorIdState(stored);
+      actorIdRef.current = stored;
+    }
+  }, []);
+  const setActorId = useCallback((id: DemoActorId) => {
+    setActorIdState(id);
+    actorIdRef.current = id;
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem(ACTOR_STORAGE_KEY, id);
+    }
+  }, []);
   // Track the number of in-flight API operations and mirror it onto a DOM
   // attribute on <html>. Playwright tests use this to wait deterministically
   // for asynchronous mutations to land — `data-ops-in-flight="0"` means the
@@ -242,7 +283,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     async (projectId, op) => {
       bumpInFlight(1);
       try {
-        const { state, audits } = await apiOperation(projectId, op);
+        const { state, audits } = await apiOperation(
+          projectId,
+          op,
+          actorIdRef.current,
+        );
         commit(upsertProject(state, audits));
         // Server returns ONLY the audits emitted by this operation. We
         // already wiped this project's audits and re-appended them — see
@@ -260,7 +305,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     async (name) => {
       bumpInFlight(1);
       try {
-        const { state, audits } = await apiCreate(name);
+        const { state, audits } = await apiCreate(name, actorIdRef.current);
         commit(upsertProject(state, audits));
         return state.project.id;
       } finally {
@@ -291,6 +336,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         resetStore,
         refreshProject,
         refreshProjects,
+        actorId,
+        setActorId,
       }}
     >
       {children}

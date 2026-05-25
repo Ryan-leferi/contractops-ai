@@ -19,6 +19,7 @@ import {
   applyOperationToStore,
   parseOperationOrThrow,
 } from "@/lib/server-store";
+import { UnknownActorError, resolveDemoActor } from "@/lib/demo-actors";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -56,8 +57,28 @@ export async function POST(
     );
   }
 
+  // Resolve the client-supplied actor_id against the demo registry. The
+  // request body shape is { name, args, actor_id? }; the operation
+  // descriptor itself stays `{ name, args }` — actor is transport-level,
+  // not part of the workflow op.
+  let actor;
   try {
-    const result = await applyOperationToStore(ctx.params.id, op);
+    const actorIdRaw = (body as { actor_id?: unknown }).actor_id;
+    actor = resolveDemoActor(
+      typeof actorIdRaw === "string" ? actorIdRaw : undefined,
+    );
+  } catch (err) {
+    if (err instanceof UnknownActorError) {
+      return NextResponse.json(
+        { error: err.message, code: err.code },
+        { status: 400 },
+      );
+    }
+    throw err;
+  }
+
+  try {
+    const result = await applyOperationToStore(ctx.params.id, op, actor);
     return NextResponse.json(result);
   } catch (err) {
     if (err instanceof ProjectNotFoundError) {

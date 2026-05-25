@@ -140,3 +140,25 @@ Lightweight ADRs. Each decision derives from [PLATFORM_BRIEF.md](../PLATFORM_BRI
 - `.contractops-data/`, `.tmp-e2e-data/`, and `*.db` / `*.sqlite` / `*.sqlite3` are gitignored, and `npm run repo:hygiene` refuses to allow them to be tracked.
 - Generated `.docx` and `_cover_email.md` artifacts are never written into the persistence root — `ExportFile.content` is a text summary, not the binary.
 - Real confidential source documents MUST NOT be POSTed into either adapter. PLATFORM_BRIEF.md §10 and §12 rule 6 still apply.
+
+---
+
+## ADR-013 — Demo actor registry (per-actor demo, NOT authentication)
+
+**Source:** Milestone 3F scope; PLATFORM_BRIEF.md §7 (human lawyer roles) + §12 rule 4 (AuditLog).
+
+**Decision:** The web app exposes an "Acting as" dropdown in the global header that lets a demo user pick one of three predefined actors:
+
+- `lawyer_kim` (`human_lawyer`) — registry default
+- `lawyer_park` (`human_lawyer`) — second lawyer, for hand-off / override scenarios
+- `business_choi` (`user`) — non-lawyer; blocked from lawyer-only ops
+
+The registry lives in `packages/web/lib/demo-actors.ts` and is shared between client and server. Every `/api/projects` and `/api/projects/[id]/operations` request includes an `actor_id` field; the server resolves it against the registry and rejects unknown ids with HTTP 400 (`UnknownActorError`). The resolved `Actor` (with `id`, `role`, `display_name`) flows through `applyOperationToStore` → core's `agg*` functions, so the existing role guards (`actor.role === "human_lawyer"`) fire as designed when `business_choi` attempts an approval.
+
+**Consequence:**
+
+- **NOT AUTHENTICATION.** No password, no session, no OAuth, no SSO, no real RBAC. The "Acting as" selector is a name-picker, and the registry is the entirety of "authorization". Do not deploy this app to a public URL until a future milestone replaces it with real auth.
+- AuditLog entries (`AuditLog.actor`) and IssueDecisionHistory entries (`IssueDecisionHistoryEntry.actor_id` + `.actor_role`) now reflect the selected demo actor instead of a single hardcoded `DEMO_LAWYER`. Decision changes by different lawyers append a multi-actor trail, asserted by the multi-actor E2E.
+- Existing core role guards stay the source of truth. Adding new lawyer-only ops doesn't require changes here — they inherit the protection automatically.
+- Client-side selection is persisted in `localStorage` under `contractops:demo-actor` and is per-browser-context. The Playwright multi-actor spec leverages this to seed each context with a different actor via `addInitScript`.
+- The legacy `DEMO_LAWYER` / `DEMO_USER` constants in `lib/actions.ts` and `lib/server-aggregate-context.ts` now alias the registry default (`lawyer_kim`) and `business_choi` respectively; the IDs they expose changed (`lawyer_demo` → `lawyer_kim`, `user_demo` → `business_choi`) but no test depended on the literal old values.

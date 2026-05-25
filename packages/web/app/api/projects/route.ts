@@ -9,6 +9,7 @@
  */
 import { NextResponse } from "next/server";
 import { createProjectInStore, listProjectSummaries } from "@/lib/server-store";
+import { UnknownActorError, resolveDemoActor } from "@/lib/demo-actors";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -18,9 +19,9 @@ export async function GET() {
 }
 
 export async function POST(request: Request) {
-  let body: { name?: unknown };
+  let body: { name?: unknown; actor_id?: unknown };
   try {
-    body = (await request.json()) as { name?: unknown };
+    body = (await request.json()) as { name?: unknown; actor_id?: unknown };
   } catch {
     return NextResponse.json(
       { error: "request body is not valid JSON", code: "BAD_JSON" },
@@ -34,6 +35,22 @@ export async function POST(request: Request) {
       { status: 400 },
     );
   }
-  const { state, audits } = await createProjectInStore(name.trim());
+  // Resolve the client-supplied actor_id against the demo registry.
+  // Missing → default lawyer; unknown → 400.
+  let actor;
+  try {
+    actor = resolveDemoActor(
+      typeof body.actor_id === "string" ? body.actor_id : undefined,
+    );
+  } catch (err) {
+    if (err instanceof UnknownActorError) {
+      return NextResponse.json(
+        { error: err.message, code: err.code },
+        { status: 400 },
+      );
+    }
+    throw err;
+  }
+  const { state, audits } = await createProjectInStore(name.trim(), actor);
   return NextResponse.json({ state, audits }, { status: 201 });
 }

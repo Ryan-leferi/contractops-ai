@@ -157,6 +157,48 @@ npm run dev -w @contractops/web    # http://localhost:3000
 
 `*.docx` and `*_cover_email.md` are gitignored, and `npm run repo:hygiene` refuses to allow a tracked artifact of either shape. Generated exports from local runs land in your Downloads folder; never commit them. Ordinary documentation Markdown files (`README.md`, `CLAUDE.md`, `docs/*.md`) remain trackable — only the renderer-suffixed `*_cover_email.md` is treated as a generated artifact.
 
+## Demo actor context (Milestone 3F)
+
+The header now carries an **"Acting as"** dropdown with three predefined demo actors:
+
+| Actor id | Role | What they can do |
+|---|---|---|
+| `lawyer_kim` | `human_lawyer` | everything (registry default) |
+| `lawyer_park` | `human_lawyer` | everything; useful for hand-off / override scenarios |
+| `business_choi` | `user` | sources, intake, exports — but NOT approvals or Issue Card decisions (core throws `notHumanLawyer()`) |
+
+> **⚠ NOT AUTHENTICATION.** This is a demo name-picker. There is no password, no session, no OAuth, no SSO, no real RBAC. The server validates the chosen id against the hardcoded `lib/demo-actors.ts` registry, and that is the entirety of "authorization". A future milestone replaces this with a real identity provider. **Until then, do not deploy this app to a public URL.**
+
+### Where it flows
+
+1. The browser picks an actor (`actorId` in `StoreProvider`); the choice is persisted in `localStorage` under `contractops:demo-actor` (per-browser-context).
+2. Every `POST /api/projects` and `POST /api/projects/[id]/operations` carries an `actor_id` field. The server resolves it via `resolveDemoActor(id)`:
+   - missing → registry default (`lawyer_kim`).
+   - unknown → HTTP 400 (`UnknownActorError`, `code: "UNKNOWN_ACTOR"`).
+3. The resolved `Actor` flows into `applyOperationToStore` → `core.agg*`. Lawyer-only ops (`approve_*`, `decide_issue`, `classify_and_confirm`) keep their existing `actor.role === "human_lawyer"` guard — selecting `business_choi` makes those ops throw `notHumanLawyer()`, which the route surfaces as HTTP 422 (`code: "OPERATION_REJECTED"`).
+4. AuditLog entries (`AuditLog.actor`) and IssueDecisionHistory entries (`IssueDecisionHistoryEntry.actor_id` + `.actor_role`) reflect the selected actor. Decision changes by different lawyers append a multi-actor trail — proved by `packages/web/e2e/multi-actor.spec.ts`.
+
+### Multi-actor demo
+
+```bash
+npm run dev -w @contractops/web   # then open the project URL in two browser windows
+# Window A: pick "Kim 변호사" → reject an Issue Card with a reason note
+# Window B: pick "Park 변호사" → change the same card back to accepted
+# The card's "Decision history" toggle shows both actors and both reason notes.
+# Window C (a third window): pick "Choi 사업담당" → attempting an approval
+# fails with "actor is not a human_lawyer" at the server.
+```
+
+### Future path to real auth
+
+The registry resolution is intentionally the single chokepoint. A future milestone will:
+
+1. Replace `resolveDemoActor()` with a session-cookie / JWT validator backed by a real identity provider.
+2. Move from "single trusted browser picks the id" to "server reads the id from a signed token".
+3. Layer real RBAC on top (per-project lawyer assignments, multi-tenant isolation).
+
+Until then: production deployment **still requires real authentication and authorization**; this milestone is multi-user *demo* only.
+
 ## Persistence (Milestones 3D + 3E)
 
 State for the web app — `ProjectState`, `AuditLog`, `IssueDecisionHistoryEntry` — flows through a single `PersistenceAdapter` interface (`packages/web/lib/persistence/`). Two adapters ship:

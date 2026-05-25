@@ -24,8 +24,7 @@ import type {
 
 import {
   buildServerAggregateContext,
-  getDemoLawyer,
-  getDemoUser,
+  getDefaultLawyer,
   makeServerEnv,
 } from "./server-aggregate-context";
 import type { Operation } from "./operations";
@@ -84,10 +83,15 @@ export interface ApplyResult {
   audits: AuditLog[];
 }
 
-export async function createProjectInStore(name: string): Promise<ApplyResult> {
+export async function createProjectInStore(
+  name: string,
+  actor?: Actor,
+): Promise<ApplyResult> {
   ensureServerPromptsLoaded();
   const env = makeServerEnv();
-  const res = core.aggCreateProject({ name, created_by: getDemoUser() }, env);
+  // Project creation accepts any actor (no role check in core).
+  const createdBy = actor ?? getDefaultLawyer();
+  const res = core.aggCreateProject({ name, created_by: createdBy }, env);
   const creationAudit = res.audits[0]!;
   await adapter().createProject(res.state, creationAudit);
   return { state: res.state, audits: res.audits };
@@ -101,6 +105,7 @@ export async function createProjectInStore(name: string): Promise<ApplyResult> {
 export async function applyOperationToStore(
   projectId: string,
   op: Operation,
+  actor?: Actor,
 ): Promise<ApplyResult> {
   ensureServerPromptsLoaded();
   const a = adapter();
@@ -110,11 +115,14 @@ export async function applyOperationToStore(
   }
 
   const env = makeServerEnv();
-  const lawyer = getDemoLawyer();
-  const user = getDemoUser();
-  const ctx = buildServerAggregateContext(current);
+  // Single resolved actor flows into both the dispatcher and the
+  // AggregateContext. Lawyer-only ops still throw inside core when the
+  // resolved actor is not a human_lawyer (e.g. `business_choi` trying
+  // to approve a Deal Memo).
+  const effectiveActor: Actor = actor ?? getDefaultLawyer();
+  const ctx = buildServerAggregateContext(current, effectiveActor);
 
-  const result = await dispatch(current, op, env, lawyer, user, ctx);
+  const result = await dispatch(current, op, env, effectiveActor, ctx);
 
   // Persist the new ProjectState snapshot first so a subsequent read
   // sees the latest state even if an append below fails. The append-only
@@ -142,13 +150,16 @@ async function dispatch(
   state: core.ProjectState,
   op: Operation,
   env: core.Env,
-  lawyer: Actor,
-  user: Actor,
+  actor: Actor,
   ctx: core.AggregateContext,
 ): Promise<core.AggregateResult> {
+  // The single resolved actor flows into every op. Ops that need a
+  // human_lawyer enforce it inside @contractops/core; ops that accept
+  // any role (add_source, add_source_content, answer_intake, create_export)
+  // happily take a non-lawyer actor.
   switch (op.name) {
     case "add_source":
-      return core.aggAddSource(state, { ...op.args, uploaded_by: user }, env);
+      return core.aggAddSource(state, { ...op.args, uploaded_by: actor }, env);
     case "add_source_content":
       return core.aggAddSourceContent(
         state,
@@ -161,33 +172,33 @@ async function dispatch(
         env,
       );
     case "lock_source_pack":
-      return core.aggLockSourcePack(state, lawyer, env);
+      return core.aggLockSourcePack(state, actor, env);
     case "classify_and_confirm":
       return core.aggClassifyAndConfirm(
         state,
-        { ...op.args, confirmed_by: lawyer },
+        { ...op.args, confirmed_by: actor },
         env,
       );
     case "select_playbook":
       return core.aggSelectPlaybook(
         state,
-        { available_playbooks: loadPlaybooks(), selector: lawyer },
+        { available_playbooks: loadPlaybooks(), selector: actor },
         env,
       );
     case "answer_intake":
       return core.aggAnswerIntake(
         state,
-        { ...op.args, answered_by: user },
+        { ...op.args, answered_by: actor },
         env,
       );
     case "draft_deal_memo":
       return core.aggDraftDealMemo(state, ctx);
     case "approve_deal_memo":
-      return core.aggApproveDealMemo(state, lawyer, env);
+      return core.aggApproveDealMemo(state, actor, env);
     case "draft_drafting_plan":
       return core.aggDraftDraftingPlan(state, ctx);
     case "approve_drafting_plan":
-      return core.aggApproveDraftingPlan(state, lawyer, env);
+      return core.aggApproveDraftingPlan(state, actor, env);
     case "create_v0":
       return core.aggCreateV0(state, ctx);
     case "run_mock_reviews":
@@ -200,7 +211,7 @@ async function dispatch(
           decision: op.args.decision,
           partial_note: op.args.partial_note,
           reason_note: op.args.reason_note,
-          decided_by: lawyer,
+          decided_by: actor,
         },
         env,
       );
@@ -209,11 +220,11 @@ async function dispatch(
     case "create_revision":
       return core.aggCreateRevision(state, ctx);
     case "approve_final":
-      return core.aggApproveFinal(state, lawyer, env);
+      return core.aggApproveFinal(state, actor, env);
     case "create_export":
       return core.aggCreateExport(
         state,
-        { ...op.args, created_by: lawyer },
+        { ...op.args, created_by: actor },
         env,
       );
   }

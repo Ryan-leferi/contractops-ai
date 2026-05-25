@@ -34,12 +34,14 @@ test("NDA happy path — create → sources → confirm → playbook → intake 
   await page.fill('[data-testid="source-file-name"]', "proposal_v1.pdf");
   await page.click('[data-testid="add-source-btn"]');
   await expect(page.getByTestId("source-row")).toHaveCount(1);
+  await waitForStoreIdle(page);
 
   // Add a second source for realism
   await page.fill('[data-testid="source-file-name"]', "operation_guide.pdf");
   await page.locator('select#stype').selectOption("operation_guide");
   await page.click('[data-testid="add-source-btn"]');
   await expect(page.getByTestId("source-row")).toHaveCount(2);
+  await waitForStoreIdle(page);
 
   // 2-bis. Attach SYNTHETIC text content to the first source document.
   // Verifies the source-content textarea + SourceDocumentContent flow.

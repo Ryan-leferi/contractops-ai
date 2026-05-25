@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import { ActorSelector } from "@/components/actor-selector";
 import { StoreProvider } from "@/components/store-provider";
 import { PlaybooksProvider } from "@/components/playbooks-provider";
 import { PromptsProvider } from "@/components/prompts-provider";
@@ -22,7 +23,8 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                 <a href="/projects" className="text-lg font-semibold">
                   ContractOps AI
                 </a>
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <ActorSelector />
                   <span
                     className="text-xs px-2 py-1 border rounded bg-muted text-foreground font-medium"
                     title="LLM provider mode. Set NEXT_PUBLIC_LLM_MODE at build time to display a different value. Real-mode wiring arrives in a later milestone."
