@@ -1,11 +1,14 @@
 import { expect, test } from "@playwright/test";
-import { waitForStoreIdle } from "./helpers";
+import { setDemoActorCookie, waitForStoreIdle } from "./helpers";
 
 /**
- * Milestone 3F — multi-actor / per-actor demo E2E.
+ * Multi-actor / per-actor demo E2E (Milestones 3F + 3I).
  *
- * Three browser contexts share the same server-side store (Milestone 3D)
- * AND the server-side actor registry (Milestone 3F):
+ * Three browser contexts share the same server-side store and the same
+ * server-side actor registry. After 3I the "who am I acting as?" answer
+ * lives in a server-side cookie (`contractops_demo_actor`); each
+ * Playwright context has its own cookie jar, so the three browsers hold
+ * three independent demo sessions without any client-side wiring.
  *
  *   A → lawyer_kim    (human_lawyer)
  *   B → lawyer_park   (human_lawyer)
@@ -16,40 +19,29 @@ import { waitForStoreIdle } from "./helpers";
  *   1. Reset the server store.
  *   2. A (Kim) creates the project, walks to "issues_open".
  *   3. A rejects an Issue Card with a reason note.
- *   4. B (Park) opens the same project URL, switches the actor selector
- *      to Park, and changes that card back to "accepted" with another
- *      reason note. History should show both actors.
- *   5. C (Choi) tries to approve_final via the API — server should 422
- *      because business_choi is not a human_lawyer.
- *   6. Rejected cards still excluded from revision; pending cards still
- *      block final approval.
- *
- * The actor selector lives in the global header. The selected id
- * persists in localStorage; each browser context has its own
- * localStorage, so contexts hold independent actor selections.
+ *   4. B (Park) opens the same project URL, changes that card back to
+ *      "accepted" with another reason note. Decision history shows
+ *      both actors in order.
+ *   5. C (Choi) opens the project — the actor selector reads
+ *      "business_choi" + "Business" because the cookie injected on the
+ *      context is what the server returns from /api/auth/session.
+ *   6. C (Choi) tries to decide a still-pending card via the API using
+ *      her own cookie jar — server returns 422 because business_choi
+ *      is not a human_lawyer. (Server-side role guard is the
+ *      authoritative check.)
+ *   7. C attempts to IMPERSONATE Kim by sending `actor_id: "lawyer_kim"`
+ *      in the body. Milestone 3I forbids body.actor_id outright — the
+ *      server returns 400 `OPERATION_ACTOR_ID_FORBIDDEN`. The cookie
+ *      identity is the only identity that ever runs.
+ *   8. A fresh context with an INVALID actor cookie ("anonymous_intruder")
+ *      gets 401 `INVALID_SESSION`.
+ *   9. Decision history still has exactly Kim + Park (no Choi entries).
+ *  10. AuditLog still attributes project_created + deal_memo_approved
+ *      to Kim; no entry was ever attributed to Choi.
  */
 
-async function setActorInLocalStorage(
-  context: import("@playwright/test").BrowserContext,
-  actorId: string,
-) {
-  // Drop the storage key on a blank page first (initStorage requires the
-  // page to be reachable). We then visit /projects which will hydrate
-  // from this seed value.
-  await context.addInitScript(
-    (id) => {
-      try {
-        window.localStorage.setItem("contractops:demo-actor", id);
-      } catch {
-        /* ignore */
-      }
-    },
-    actorId,
-  );
-}
-
 test.describe("Multi-actor demo (lawyer_kim ↔ lawyer_park, business_choi blocked)", () => {
-  test("three browser contexts each act as a different actor; AuditLog + DecisionHistory reflect it; non-lawyer is blocked from approvals", async ({
+  test("three browser contexts each act as a different actor; AuditLog + DecisionHistory reflect it; non-lawyer is blocked from approvals; body.actor_id impersonation is rejected", async ({
     browser,
     request,
   }) => {
@@ -60,10 +52,11 @@ test.describe("Multi-actor demo (lawyer_kim ↔ lawyer_park, business_choi block
 
     // ── Context A: lawyer_kim creates + drives the project ─────────
     const contextA = await browser.newContext();
-    await setActorInLocalStorage(contextA, "lawyer_kim");
+    await setDemoActorCookie(contextA, "lawyer_kim");
     const pageA = await contextA.newPage();
 
     await pageA.goto("/projects/new");
+    await waitForStoreIdle(pageA);
     await expect(pageA.getByTestId("actor-selector-input")).toHaveValue("lawyer_kim");
     await expect(pageA.getByTestId("actor-selector-role")).toHaveText("Lawyer");
 
@@ -76,6 +69,7 @@ test.describe("Multi-actor demo (lawyer_kim ↔ lawyer_park, business_choi block
     await pageA.goto(`/projects/${projectId}/sources`);
     await pageA.fill('[data-testid="source-file-name"]', "proposal.pdf");
     await pageA.click('[data-testid="add-source-btn"]');
+    await waitForStoreIdle(pageA);
     pageA.once("dialog", (d) => d.accept());
     await pageA.click('[data-testid="lock-pack-btn"]');
     await expect(pageA.getByTestId("source-pack-status")).toHaveText("Locked");
@@ -94,6 +88,7 @@ test.describe("Multi-actor demo (lawyer_kim ↔ lawyer_park, business_choi block
       const card = intakeCards.nth(i);
       await card.locator("input").fill(`a${i + 1}`);
       await card.locator("button").click();
+      await waitForStoreIdle(pageA);
     }
     await expect(pageA.getByTestId("intake-progress")).toContainText(
       "all required answered",
@@ -130,7 +125,7 @@ test.describe("Multi-actor demo (lawyer_kim ↔ lawyer_park, business_choi block
 
     // ── Context B: lawyer_park overrules Kim's rejection ───────────
     const contextB = await browser.newContext();
-    await setActorInLocalStorage(contextB, "lawyer_park");
+    await setDemoActorCookie(contextB, "lawyer_park");
     const pageB = await contextB.newPage();
     await pageB.goto(`/projects/${projectId}/issues`);
     await waitForStoreIdle(pageB);
@@ -157,8 +152,6 @@ test.describe("Multi-actor demo (lawyer_kim ↔ lawyer_park, business_choi block
     const acceptedCard = pageB.locator('[data-testid="decided-card-accepted"]').first();
     await expect(acceptedCard).toBeVisible();
     const historyToggle = acceptedCard.locator('[data-testid^="history-toggle-"]').first();
-    // It may already be open (the previous open survived the
-    // re-render via React state). Click only if collapsed.
     const historyPanel = acceptedCard.locator('[data-testid^="history-panel-"]').first();
     if (!(await historyPanel.isVisible())) {
       await historyToggle.click();
@@ -185,15 +178,20 @@ test.describe("Multi-actor demo (lawyer_kim ↔ lawyer_park, business_choi block
     expect(histBody.history[1]!.actor_id).toBe("lawyer_park");
     expect(histBody.history[1]!.new_decision).toBe("accepted");
 
-    // ── Context C: business_choi tries a lawyer-only op ────────────
-    // We exercise the API directly because UI surfaces (button disabled
-    // states) are out of scope for this milestone — the server-side
-    // role guard is the authoritative check.
-    //
-    // `decide_issue` is reachable from `issues_open` (we're still there),
-    // and core's `decideIssueCard` rejects non-human-lawyer actors
-    // BEFORE doing anything else. We pick a still-pending card so the
-    // workflow's status guard doesn't fire first.
+    // ── Context C: business_choi opens the project (Milestone 3I) ──
+    const contextC = await browser.newContext();
+    await setDemoActorCookie(contextC, "business_choi");
+    const pageC = await contextC.newPage();
+    await pageC.goto(`/projects/${projectId}/issues`);
+    await waitForStoreIdle(pageC);
+    await expect(pageC.getByTestId("actor-selector-input")).toHaveValue("business_choi");
+    await expect(pageC.getByTestId("actor-selector-role")).toHaveText("Business");
+    // UI guard surface — lawyer-required note visible on the issues page.
+    await expect(
+      pageC.locator('[data-testid="lawyer-required-note"]').first(),
+    ).toBeVisible();
+
+    // Pick a still-pending card for the force tests below.
     const stateResp = await request.get(`/api/projects/${projectId}`);
     const stateBody = (await stateResp.json()) as {
       state: { issue_cards: { issue_id: string; human_decision: string }[] };
@@ -202,23 +200,57 @@ test.describe("Multi-actor demo (lawyer_kim ↔ lawyer_park, business_choi block
       (c) => c.human_decision === "pending",
     );
     expect(pendingCard).toBeDefined();
-    const blockedResp = await request.post(
+
+    // ── C decides a card via her OWN request context (cookie =
+    //    business_choi). No body.actor_id. Server's role guard fires.
+    const refused = await contextC.request.post(
       `/api/projects/${projectId}/operations`,
       {
         data: {
           name: "decide_issue",
           args: { issue_id: pendingCard!.issue_id, decision: "accepted" },
-          actor_id: "business_choi",
         },
       },
     );
-    expect(blockedResp.status()).toBe(422);
-    const blockedBody = (await blockedResp.json()) as { error: string; code: string };
-    expect(blockedBody.error.toLowerCase()).toContain("lawyer");
-    expect(blockedBody.code).toBe("OPERATION_REJECTED");
+    expect(refused.status()).toBe(422);
+    const refusedBody = (await refused.json()) as { error: string; code: string };
+    expect(refusedBody.code).toBe("OPERATION_REJECTED");
+    expect(refusedBody.error.toLowerCase()).toContain("lawyer");
 
-    // The decision history MUST NOT have grown — Choi's attempt left
-    // no trace beyond Kim + Park.
+    // ── C attempts IMPERSONATION via body.actor_id="lawyer_kim".
+    //    Milestone 3I rejects body.actor_id outright — server returns
+    //    400 OPERATION_ACTOR_ID_FORBIDDEN. Critically, the request is
+    //    rejected BEFORE the operation runs, so Choi cannot pretend to
+    //    be Kim by editing a JSON field.
+    const impersonate = await contextC.request.post(
+      `/api/projects/${projectId}/operations`,
+      {
+        data: {
+          name: "decide_issue",
+          args: { issue_id: pendingCard!.issue_id, decision: "accepted" },
+          actor_id: "lawyer_kim",
+        },
+      },
+    );
+    expect(impersonate.status()).toBe(400);
+    const impBody = (await impersonate.json()) as { code: string };
+    expect(impBody.code).toBe("OPERATION_ACTOR_ID_FORBIDDEN");
+
+    // ── A fresh context with an UNKNOWN actor cookie ─────────────
+    const contextBad = await browser.newContext();
+    await setDemoActorCookie(contextBad, "anonymous_intruder");
+    const badResp = await contextBad.request.post(
+      `/api/projects/${projectId}/operations`,
+      {
+        data: { name: "approve_final", args: {} },
+      },
+    );
+    expect(badResp.status()).toBe(401);
+    const badBody = (await badResp.json()) as { code: string };
+    expect(badBody.code).toBe("INVALID_SESSION");
+    await contextBad.close();
+
+    // ── Append-only audit + decision history must NOT have grown.
     const histResp2 = await request.get(
       `/api/projects/${projectId}/decision-history`,
     );
@@ -230,24 +262,9 @@ test.describe("Multi-actor demo (lawyer_kim ↔ lawyer_park, business_choi block
       histBody2.history.some((h) => h.actor_id === "business_choi"),
     ).toBe(false);
 
-    // Unknown actor_id is rejected with a clean 400.
-    const unknownResp = await request.post(
-      `/api/projects/${projectId}/operations`,
-      {
-        data: {
-          name: "approve_final",
-          args: {},
-          actor_id: "anonymous_intruder",
-        },
-      },
-    );
-    expect(unknownResp.status()).toBe(400);
-    const unknownBody = (await unknownResp.json()) as { error: string; code: string };
-    expect(unknownBody.code).toBe("UNKNOWN_ACTOR");
-
-    // AuditLog still records the correct actor ids — the project_created
-    // entry is Kim, the deal_memo_approved entry is Kim, no Choi
-    // decision was ever recorded.
+    // AuditLog records the correct actor ids — project_created is Kim,
+    // deal_memo_approved is Kim, and NO entry was ever attributed to
+    // business_choi (her 422 + 400 + 401 attempts left no trail).
     const auditResp = await request.get(`/api/projects/${projectId}/audit-logs`);
     const auditBody = (await auditResp.json()) as {
       audits: { event_type: string; actor: string }[];
@@ -264,5 +281,6 @@ test.describe("Multi-actor demo (lawyer_kim ↔ lawyer_park, business_choi block
 
     await contextA.close();
     await contextB.close();
+    await contextC.close();
   });
 });

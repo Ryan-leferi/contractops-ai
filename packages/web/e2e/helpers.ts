@@ -1,4 +1,4 @@
-import { expect, type Page } from "@playwright/test";
+import { expect, type BrowserContext, type Page } from "@playwright/test";
 
 /**
  * Wait for every in-flight store operation to land (Milestone 3D).
@@ -19,6 +19,43 @@ export async function waitForStoreIdle(page: Page, timeoutMs = 10_000): Promise<
     null,
     { timeout: timeoutMs },
   );
+}
+
+/**
+ * Seed the demo session actor cookie on a browser context before the
+ * first navigation (Milestone 3I).
+ *
+ * After 3I the client no longer reads `localStorage`; the server
+ * resolves the actor from the `contractops_demo_actor` cookie. Playwright
+ * specs that want a non-default actor (lawyer_park, business_choi, …)
+ * inject the cookie up front so `GET /api/auth/session` on first mount
+ * returns the intended actor.
+ *
+ * `name` and `path` must match `DEMO_SESSION_COOKIE_NAME` exactly —
+ * the server only reads cookies at `path=/` for our routes.
+ *
+ * The base URL is read from the Playwright config (`baseURL` in
+ * `playwright.config.ts` is `http://localhost:3100`). We pass it as a
+ * full URL string so `addCookies` doesn't need a separate `domain`
+ * field.
+ */
+export async function setDemoActorCookie(
+  context: BrowserContext,
+  actorId: string,
+  baseUrl = "http://localhost:3100",
+): Promise<void> {
+  // Playwright accepts EITHER `url` OR (`domain` + `path`), not both.
+  // Passing `url` implicitly anchors the cookie to that origin at
+  // path "/", which is exactly what `DEMO_SESSION_COOKIE_NAME` is
+  // scoped to on the server side.
+  await context.addCookies([
+    {
+      name: "contractops_demo_actor",
+      value: actorId,
+      url: baseUrl,
+      sameSite: "Lax",
+    },
+  ]);
 }
 
 /**

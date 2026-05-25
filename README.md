@@ -189,7 +189,7 @@ const isLawyer = canActAsLawyer(useCurrentActor());
 
 Production deployment **still requires real authentication and authorization** — see ADR-013 / ADR-014 and the "Future path to real auth" subsection below.
 
-## Demo actor context (Milestone 3F)
+## Demo actor context (Milestones 3F + 3I)
 
 The header now carries an **"Acting as"** dropdown with three predefined demo actors:
 
@@ -199,37 +199,70 @@ The header now carries an **"Acting as"** dropdown with three predefined demo ac
 | `lawyer_park` | `human_lawyer` | everything; useful for hand-off / override scenarios |
 | `business_choi` | `user` | sources, intake, exports — but NOT approvals or Issue Card decisions (core throws `notHumanLawyer()`) |
 
-> **⚠ NOT AUTHENTICATION.** This is a demo name-picker. There is no password, no session, no OAuth, no SSO, no real RBAC. The server validates the chosen id against the hardcoded `lib/demo-actors.ts` registry, and that is the entirety of "authorization". A future milestone replaces this with a real identity provider. **Until then, do not deploy this app to a public URL.**
+> **⚠ NOT AUTHENTICATION.** This is a demo name-picker, not an identity provider. There is no password, no signed token, no OAuth, no SSO, no real RBAC. The server reads the picked id from the `contractops_demo_actor` cookie and resolves it against the hardcoded `lib/demo-actors.ts` registry — that is the entirety of "authorization". A future milestone replaces this with a real identity provider (see ADR-016). **Until then, do not deploy this app to a public URL.**
+
+### Auth boundary (Milestone 3I)
+
+Server routes never read `actor_id` from the browser anymore. Every route resolves the actor through a single seam, `resolveActorFromRequest(request)` in `packages/web/lib/auth/`:
+
+```
+browser  ──►  POST /api/projects/[id]/operations  { name, args }    ← NO actor_id in body
+                          │
+                          ▼
+              AuthSessionResolver.resolveActor(request)
+                          │   reads `contractops_demo_actor` cookie,
+                          │   validates against DEMO_ACTOR_REGISTRY
+                          ▼
+                   AuthSession { actor, source: "demo_cookie" | "demo_default" }
+                          │
+                          ▼
+              applyOperationToStore(id, op, actor) → core.agg*(state, …, actor)
+```
+
+The boundary is `AuthSessionResolver` in `lib/auth/types.ts`; the only 3I implementation is `DemoSessionAuthProvider`. A future real-auth milestone drops in a new provider (OAuth / JWT / DB-backed sessions) without touching any operation route or any `core.agg*` function.
 
 ### Where it flows
 
-1. The browser picks an actor (`actorId` in `StoreProvider`); the choice is persisted in `localStorage` under `contractops:demo-actor` (per-browser-context).
-2. Every `POST /api/projects` and `POST /api/projects/[id]/operations` carries an `actor_id` field. The server resolves it via `resolveDemoActor(id)`:
-   - missing → registry default (`lawyer_kim`).
-   - unknown → HTTP 400 (`UnknownActorError`, `code: "UNKNOWN_ACTOR"`).
-3. The resolved `Actor` flows into `applyOperationToStore` → `core.agg*`. Lawyer-only ops (`approve_*`, `decide_issue`, `classify_and_confirm`) keep their existing `actor.role === "human_lawyer"` guard — selecting `business_choi` makes those ops throw `notHumanLawyer()`, which the route surfaces as HTTP 422 (`code: "OPERATION_REJECTED"`).
-4. AuditLog entries (`AuditLog.actor`) and IssueDecisionHistory entries (`IssueDecisionHistoryEntry.actor_id` + `.actor_role`) reflect the selected actor. Decision changes by different lawyers append a multi-actor trail — proved by `packages/web/e2e/multi-actor.spec.ts`.
+1. **Cookie set.** The "Acting as" dropdown calls `POST /api/auth/demo/actor { actor_id }`, which validates against the registry and sets the `contractops_demo_actor` cookie (`httpOnly`, `SameSite=Lax`, `path=/`, 30-day max age). The browser **never** writes this cookie directly.
+2. **Cookie read.** Every mutating route (`POST /api/projects`, `POST /api/projects/[id]/operations`) calls `resolveActorFromRequest(request)`:
+   - cookie missing → demo default `lawyer_kim`, `source: "demo_default"`.
+   - cookie present + valid → that actor, `source: "demo_cookie"`.
+   - cookie present + unknown id → **HTTP 401** `INVALID_SESSION` + `Set-Cookie` that clears the bad value. Never falls back silently.
+3. **`body.actor_id` is rejected.** Routes return **HTTP 400** `OPERATION_ACTOR_ID_FORBIDDEN` if the request body carries an `actor_id` field. The session boundary is the single source of "who"; accepting a body-provided id would let any caller impersonate anyone in the registry by editing one JSON field. Preferred over silent-ignore so a future client regression surfaces immediately.
+4. **Role guard.** The resolved `Actor` flows into `applyOperationToStore` → `core.agg*`. Lawyer-only ops keep their existing `actor.role === "human_lawyer"` check — a `business_choi` session attempting `approve_*` / `decide_issue` / `classify_and_confirm` gets HTTP 422 `OPERATION_REJECTED`.
+5. **Audit + history.** `AuditLog.actor` and `IssueDecisionHistoryEntry.actor_id` + `.actor_role` always come from the resolved session, never from the body. Decision changes by different lawyers (cookie-switched mid-flow) append a multi-actor trail — proved by `packages/web/e2e/multi-actor.spec.ts`.
+
+### Auth API surface
+
+| Route | Method | Purpose |
+|---|---|---|
+| `/api/auth/session` | `GET` | Return `{ actor, source }` for the current request. Used by the header to display the current actor. |
+| `/api/auth/demo/actor` | `POST` | Body `{ actor_id }`. Validate against registry, set the cookie. Returns `{ actor, source: "demo_cookie" }`. |
+| `/api/auth/demo/actor` | `DELETE` | Clear the cookie. Returns `{ actor, source: "demo_default" }`. |
 
 ### Multi-actor demo
 
 ```bash
-npm run dev -w @contractops/web   # then open the project URL in two browser windows
+npm run dev -w @contractops/web   # then open the project URL in three browser windows
 # Window A: pick "Kim 변호사" → reject an Issue Card with a reason note
 # Window B: pick "Park 변호사" → change the same card back to accepted
 # The card's "Decision history" toggle shows both actors and both reason notes.
-# Window C (a third window): pick "Choi 사업담당" → attempting an approval
-# fails with "actor is not a human_lawyer" at the server.
+# Window C: pick "Choi 사업담당" → lawyer-only buttons are disabled; the
+# server rejects any forced approval call with HTTP 422.
 ```
+
+Different windows hold independent cookie jars, so the three demo sessions don't collide. The `multi-actor.spec.ts` Playwright spec exercises exactly this flow and asserts that forcing `body.actor_id="lawyer_kim"` from the business_choi context gets HTTP 400.
 
 ### Future path to real auth
 
-The registry resolution is intentionally the single chokepoint. A future milestone will:
+The auth boundary is intentionally the single chokepoint. A future milestone will:
 
-1. Replace `resolveDemoActor()` with a session-cookie / JWT validator backed by a real identity provider.
-2. Move from "single trusted browser picks the id" to "server reads the id from a signed token".
+1. Replace `DemoSessionAuthProvider` with a real `AuthSessionResolver` backed by a signed JWT / DB-backed session table.
+2. Add a user table and a project-membership table; `requireAuthenticatedActor` throws `UnauthenticatedError` for missing sessions instead of defaulting.
 3. Layer real RBAC on top (per-project lawyer assignments, multi-tenant isolation).
+4. Replace the demo `POST /api/auth/demo/actor` route with a real `/api/auth/login` (OAuth / magic link / password); the demo route stays only behind an explicit `DEMO_AUTH=true` env flag for local development.
 
-Until then: production deployment **still requires real authentication and authorization**; this milestone is multi-user *demo* only.
+Until then: production deployment **still requires real authentication and authorization**; this milestone is multi-user *demo* only. See ADR-016 for the full rationale.
 
 ## Persistence (Milestones 3D + 3E + 3H)
 
