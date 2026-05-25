@@ -16,7 +16,9 @@
  * Picking the right one today is a documentation hook for tomorrow.
  */
 import type { Actor } from "@contractops/schemas";
+import { getAuthConfig } from "./config";
 import { DemoSessionAuthProvider } from "./demo-session";
+import { SignedCookieAuthProvider } from "./signed-cookie";
 import {
   type AuthSession,
   type AuthSessionResolver,
@@ -24,11 +26,20 @@ import {
 
 const GLOBAL_KEY = "__contractops_auth_session_resolver_v1__";
 
+/**
+ * Build the resolver appropriate to the current `AUTH_MODE`. Cached on
+ * `globalThis` so Next dev HMR doesn't instantiate a fresh provider
+ * (and re-parse the auth config) on every route module reload.
+ */
 export function getAuthSessionResolver(): AuthSessionResolver {
   const g = globalThis as Record<string, unknown>;
   const cached = g[GLOBAL_KEY] as AuthSessionResolver | undefined;
   if (cached) return cached;
-  const fresh = new DemoSessionAuthProvider();
+  const config = getAuthConfig();
+  const fresh: AuthSessionResolver =
+    config.mode === "signed_cookie"
+      ? new SignedCookieAuthProvider()
+      : new DemoSessionAuthProvider();
   g[GLOBAL_KEY] = fresh;
   return fresh;
 }
