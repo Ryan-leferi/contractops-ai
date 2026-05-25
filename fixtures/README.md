@@ -22,6 +22,14 @@ A BOF-style event booth fixture MAY live here. It is a sanitized reference, used
 
 BOF is a fixture, NOT the platform's purpose. BOF-specific facts MUST NOT be hardcoded into platform logic. See ADR-009 in [docs/08_ARCHITECTURE_DECISIONS.md](../docs/08_ARCHITECTURE_DECISIONS.md).
 
-## Status
+## Alpha v0.1 evaluation fixtures (Milestone 4C)
 
-No fixtures are yet written. They will be added in [TASKS.md](../TASKS.md) Milestone 2.
+Three sanitized fixtures drive the alpha evaluation runner (`npm run alpha:eval`):
+
+| File | Contract type | Purpose |
+|---|---|---|
+| [`synthetic-nda.json`](synthetic-nda.json) | NDA | Bidirectional NDA, 24-month term, `example.test` counterparty. Exercises the confidentiality Playbook + intake. |
+| [`synthetic-service-agreement.json`](synthetic-service-agreement.json) | Service Agreement | Synthetic vendor SOW + quote + milestone payments + SLA. Exercises the service Playbook + multi-source intake. |
+| [`synthetic-booth-event.json`](synthetic-booth-event.json) | Event Booth Entry | Original Milestone 0 fixture, retained unchanged. Exercises the booth Playbook. |
+
+All three are **synthetic** — `example.test` domains, obviously invented amounts, no real party / client / counterparty / BOF facts. They are loaded by `scripts/run-alpha-evaluation.ts` and `scripts/run-fixture.ts`. They MUST NOT be used to seed real workflows or pasted into real-mode runs.
