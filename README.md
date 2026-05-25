@@ -46,30 +46,36 @@ npm run e2e -w @contractops/web    # Playwright (mock-mode)
 
 The "LLM mode: MOCK" badge in the app header confirms the default build.
 
-## Real mode (Milestones 2E + 4A — OpenAI/Claude for selected roles)
+## Real mode (Milestones 2E + 4A + 4B — OpenAI/Claude for selected roles)
 
 > **Warning.** Do not paste real confidential source documents into the UI or fixture during real-mode testing. Use sanitized or synthetic text only. The brief's §10 and §12 rules apply. Production use awaits real auth + RBAC + retention/redaction controls.
 
-Four real-provider seams are live:
+Six real-provider seams are live across drafting, revision, and review:
 
 | Role | Provider | Gating | Status |
 |---|---|---|---|
 | `deal_memo_drafter` | OpenAI | `LLM_PROVIDER_ALLOWLIST` only (2C backward compat) | Milestone 2C |
-| `counterparty_reviewer` | Anthropic (Claude) | `LLM_PROVIDER_ALLOWLIST` only (2E backward compat) | Milestone 2E |
 | `contract_drafter` | OpenAI | `LLM_PROVIDER_ALLOWLIST` **AND** `REAL_LLM_ROLE_ALLOWLIST` | Milestone 4A |
 | `revision_agent` | OpenAI | `LLM_PROVIDER_ALLOWLIST` **AND** `REAL_LLM_ROLE_ALLOWLIST` | Milestone 4A |
+| `counterparty_reviewer` | Anthropic (Claude) | `LLM_PROVIDER_ALLOWLIST` **AND** `REAL_LLM_ROLE_ALLOWLIST` (BREAKING vs 2E; see ADR-021) | Milestone 4B |
+| `source_consistency_reviewer` | OpenAI | `LLM_PROVIDER_ALLOWLIST` **AND** `REAL_LLM_ROLE_ALLOWLIST` | Milestone 4B |
+| `legal_style_reviewer` | OpenAI | `LLM_PROVIDER_ALLOWLIST` **AND** `REAL_LLM_ROLE_ALLOWLIST` | Milestone 4B |
 
-All other four roles stay on the in-browser / in-process mock. API keys live ONLY on the server.
+The remaining roles (`drafting_plan_drafter`, `final_qa_assistant`) stay on the in-browser / in-process mock. The deterministic-QA pass (`deterministic_qa`) is non-LLM and runs unchanged. API keys live ONLY on the server.
+
+> **Gemini (Google) is NOT implemented in Alpha v0.1.** The original 4B brief listed Gemini as the candidate backend for the source-consistency reviewer; we kept that role on OpenAI to avoid introducing a third SDK + auth pathway for the alpha freeze. `GOOGLE_API_KEY` in `.env.example` is reserved for a post-alpha milestone and is not consumed by any provider today.
 
 ### Why a per-role allowlist?
 
-Before 4A, flipping `USE_REAL_LLM=true` enabled real mode for every role on the provider allowlist — including the contract drafter, which produces the most expensive + highest-stakes output. 4A adds `REAL_LLM_ROLE_ALLOWLIST` so adding a new role to real mode is always an explicit ops decision:
+Before 4A, flipping `USE_REAL_LLM=true` enabled real mode for every role on the provider allowlist — including the contract drafter, which produces the most expensive + highest-stakes output. 4A added `REAL_LLM_ROLE_ALLOWLIST` so adding a new role to real mode is always an explicit ops decision. 4B extends the same gate to all three review roles (see ADR-021 for the `counterparty_reviewer` breaking change vs 2E):
 
-- `REAL_LLM_ROLE_ALLOWLIST=` (empty / unset) → `contract_drafter` + `revision_agent` always mock, even when `USE_REAL_LLM=true` and `LLM_PROVIDER_ALLOWLIST=openai`.
-- `REAL_LLM_ROLE_ALLOWLIST=contract_drafter` → only the contract drafter escalates; revision stays mock.
-- `REAL_LLM_ROLE_ALLOWLIST=contract_drafter,revision_agent` → both escalate.
+- `REAL_LLM_ROLE_ALLOWLIST=` (empty / unset) → every 4A + 4B role is mock, even with `USE_REAL_LLM=true` and providers allowlisted. Only `deal_memo_drafter` (2C backward compat) escalates with just the provider allowlist.
+- `REAL_LLM_ROLE_ALLOWLIST=contract_drafter` → only the contract drafter escalates; revision + reviews stay mock.
+- `REAL_LLM_ROLE_ALLOWLIST=contract_drafter,revision_agent` → drafter + revision real, reviews still mock.
+- `REAL_LLM_ROLE_ALLOWLIST=counterparty_reviewer,source_consistency_reviewer,legal_style_reviewer` → reviews real (Anthropic + OpenAI + OpenAI), drafter + revision stay mock.
+- `REAL_LLM_ROLE_ALLOWLIST=contract_drafter,revision_agent,counterparty_reviewer,source_consistency_reviewer,legal_style_reviewer` → full Alpha v0.1 real surface.
 
-The 2C / 2E roles remain on their original gating (provider allowlist only) so existing deployments don't break.
+Only `deal_memo_drafter` (2C) remains on its original gating (provider allowlist only) so existing 2C deployments don't break.
 
 Copy `.env.example` to `.env.local` and configure (enable one or both):
 
@@ -135,7 +141,33 @@ It creates a project with **synthetic source text only** (`example.test` org nam
 
 > **NEVER use real confidential client data in this spec or any real-mode session** until production security controls (auth, RBAC, retention, redaction, audit forwarding to a SIEM) are approved. The Alpha v0.1 spec is a development seam, not a production system.
 
-4B remains for the real review + source-consistency seam.
+### Gated real review E2E (Milestone 4B)
+
+`packages/web/e2e/real-review.spec.ts` is gated by `E2E_REAL_REVIEW=true`. CI keeps it skipped. To run locally against real OpenAI + Anthropic accounts:
+
+```bash
+E2E_REAL_REVIEW=true \
+USE_REAL_LLM=true \
+LLM_PROVIDER_ALLOWLIST=openai,anthropic \
+REAL_LLM_ROLE_ALLOWLIST=counterparty_reviewer,source_consistency_reviewer,legal_style_reviewer \
+OPENAI_API_KEY=sk-... \
+ANTHROPIC_API_KEY=sk-ant-... \
+NEXT_PUBLIC_USE_REAL_LLM=true NEXT_PUBLIC_LLM_PROVIDER_ALLOWLIST=openai,anthropic \
+  npm run e2e -w @contractops/web -- real-review.spec.ts
+```
+
+It walks the workflow on **synthetic source text only** (`example.test` org names, obviously invented amounts) up to a mock v0, then calls `run_mock_reviews` so the three real reviewers run in parallel, and asserts:
+
+- Exactly one completed `AgentRun` per review role.
+- `counterparty_reviewer.mode = real`, `provider_id = anthropic`.
+- `source_consistency_reviewer.mode = real`, `provider_id = openai`.
+- `legal_style_reviewer.mode = real`, `provider_id = openai`.
+- Every Issue Card's `source_agent` belongs to the allowed reviewer set (no unexpected agents leaked in).
+- Workflow + persistence + RBAC invariants from earlier milestones (Source Pack lock, lawyer-only approvals, append-only audits, mock-mode preservation for non-allowlisted roles) remain intact.
+
+**Mock mode remains the default.** When any of `E2E_REAL_REVIEW`, `USE_REAL_LLM`, `LLM_PROVIDER_ALLOWLIST`, `REAL_LLM_ROLE_ALLOWLIST`, or the matching API keys are missing, every review role falls back to the in-process mock provider — no silent escalation, no network calls.
+
+After 4B only the **4C Alpha Freeze & Evaluation** milestone remains in the Alpha v0.1 roadmap.
 
 ## Deterministic QA
 

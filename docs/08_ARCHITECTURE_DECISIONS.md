@@ -527,3 +527,67 @@ Test infrastructure:
 - **Invalid LLM output cannot become a ContractVersion.** The provider's JSON validator + retry-once + throw-on-second-failure path was already in place from 2C; the aggregate dispatcher surfaces the throw and skips the state mutation. Tests pin this contract.
 - **NOT production-ready for confidential documents.** The Alpha v0.1 spec is explicit: use synthetic / sanitized source text only. Real client data awaits production security controls (auth + RBAC ✓ for the seam, retention policy ✗, redaction ✗, audit forwarding to SIEM ✗, on-disk encryption beyond DB defaults ✗).
 - **Forward path is 4B.** Real review / source-consistency seam reuses the same `REAL_LLM_ROLE_ALLOWLIST` mechanism — adding `counterparty_reviewer_real` / `source_consistency_reviewer` entries follows the same pattern as 4A.
+
+## ADR-021 — Per-role real-LLM allowlist for the three review roles + BREAKING change to counterparty_reviewer (Milestone 4B)
+
+**Source:** Milestone 4B scope ("Real Review and Source Consistency Seam"); ADR-020 (4A per-role allowlist); Milestone 2E (Anthropic provider seam + original `counterparty_reviewer` real wiring).
+
+**Decision:** Extend the `REAL_LLM_ROLE_ALLOWLIST` gate from 4A to cover all three review roles — `counterparty_reviewer`, `source_consistency_reviewer`, `legal_style_reviewer` — and route them as:
+
+```
+counterparty_reviewer (4B):       USE_REAL_LLM + LLM_PROVIDER_ALLOWLIST.includes("anthropic")
+                                  + ANTHROPIC_API_KEY
+                                  + REAL_LLM_ROLE_ALLOWLIST.includes("counterparty_reviewer")
+                                                                  → real (anthropic) / else mock
+source_consistency_reviewer (4B): USE_REAL_LLM + LLM_PROVIDER_ALLOWLIST.includes("openai")
+                                  + OPENAI_API_KEY
+                                  + REAL_LLM_ROLE_ALLOWLIST.includes("source_consistency_reviewer")
+                                                                  → real (openai) / else mock
+legal_style_reviewer (4B):        USE_REAL_LLM + LLM_PROVIDER_ALLOWLIST.includes("openai")
+                                  + OPENAI_API_KEY
+                                  + REAL_LLM_ROLE_ALLOWLIST.includes("legal_style_reviewer")
+                                                                  → real (openai) / else mock
+```
+
+No new provider SDK. No new agent role (the three reviewer functions already exist from 2A/2E and already share the `IssueCardListOutput` schema). No new aggregate operation (`aggRunMockReviews` already calls all three via `resolveProvider(ctx, role)` inside a `Promise.all` from 2C/3D).
+
+**BREAKING change vs 2E — `counterparty_reviewer`.** In 2E this role was gated by `LLM_PROVIDER_ALLOWLIST` alone (parallel to the 2C `deal_memo_drafter` backward compat). 4B revokes that backward compat and now requires `counterparty_reviewer` on `REAL_LLM_ROLE_ALLOWLIST` too. Existing 2E deployments that flipped `USE_REAL_LLM=true` for the counterparty reviewer MUST add `counterparty_reviewer` to `REAL_LLM_ROLE_ALLOWLIST` to keep real mode; otherwise the role silently falls back to the in-process mock (no errors, no network calls).
+
+We accept the break for three reasons:
+
+1. **Consistency.** Having ONLY `deal_memo_drafter` on provider-allowlist-only gating is much easier to explain than having two separate rules ("2C + 2E roles bypass role allowlist; 4A + 4B roles require it"). After 4B every real-capable review role goes through the same explicit per-role gate.
+2. **Cost + sensitivity envelope.** A real `counterparty_reviewer` call sends the full contract body + Playbook + source pack to Claude — same risk profile as the 4A `contract_drafter`. It deserves the same explicit ops opt-in.
+3. **Single deployer at this stage.** The Alpha v0.1 spec is explicit that real mode is for synthetic-data dev runs only. The "ops surface" of 2E real mode is the same handful of developers running it locally; the migration cost is one env var.
+
+**Gemini is intentionally NOT implemented.** The 4B scope listed Gemini as the candidate backend for `source_consistency_reviewer`. The brief allows it as a candidate but does not require it. We kept `source_consistency_reviewer` on OpenAI to avoid adding a third SDK + auth path (and a `mock__1bd1bb0f__web_search`-class isolation row in the no-SDK test) right before the Alpha freeze. `GOOGLE_API_KEY` remains in `.env.example` reserved for post-alpha. The decision is reversible: the same `REAL_LLM_ROLE_ALLOWLIST` mechanism would route `source_consistency_reviewer` to a future Gemini provider without touching `aggRunMockReviews` or the role agent.
+
+**`legal_style_reviewer` is included.** The 4B scope made this role optional ("if safely supported"). All three review roles share the same `IssueCardListOutput` Zod schema, so the risk profile (prompt-injection surface, hallucinated findings, output validation) is identical to the other two — the Issue-Card-decision invariants from 3C apply unchanged regardless of which reviewer produced the finding. Excluding it would leave one of the three reviewers permanently on mock and split the operational story. Including it costs one extra branch in `tryReal()` and three test files.
+
+Implementation surface (server-only):
+
+- `packages/web/lib/server-aggregate-context.ts` — `tryReal(role)` extended with three new branches (`counterparty_reviewer`, `source_consistency_reviewer`, `legal_style_reviewer`), each checking role allowlist + provider allowlist + API key before calling `core.selectProviderByName("anthropic" | "openai", envConfig)`. The 2E branch that previously bypassed the role allowlist is removed.
+- No changes to `packages/core/src/aggregate.ts` — `aggRunMockReviews` already calls `resolveProvider(ctx, role)` for each of the three reviewers in parallel (Promise.all), so per-role routing flows through without further changes.
+- No changes to `packages/core/src/agents/roles.ts` — the three reviewer agent functions (`runCounterpartyReviewer`, `runSourceConsistencyReviewer`, `runLegalStyleReviewer`) already exist and already validate output via `issueCardListOutputSchema`.
+- No changes to `selectProvider` / `selectProviderByName` / API routes / proxy providers. Everything reuses the 2C `getProvider(role)` seam.
+- No new prompt files — the three `prompts/*_reviewer.md` templates already meet the 4B output schema requirement.
+
+AgentRun provenance: already complete (provider_id, model_id, mode, role, prompt_version, input_hash, output_json, status, started_at, completed_at, token_usage, cost_estimate, error_message). The 2C UI panel showing `provider_id` + `mode` automatically reflects the three new real routings without code changes.
+
+Test infrastructure:
+
+- `packages/web/tests/real-llm-routing-4a.test.ts` — counterparty_reviewer backward-compat test updated to assert the new 4B mock fallback (and now describes the role allowlist requirement; the old "2E backward-compat" assertion is retired).
+- `packages/web/tests/real-llm-routing-4b.test.ts` (NEW) — 9 cases covering the three review roles individually and together: missing role allowlist → mock; both allowlists + API key → real (correct provider id per role); missing API key → mock; wrong provider on `LLM_PROVIDER_ALLOWLIST` → mock; mixed-provider success path (counterparty=anthropic, source_consistency=openai, legal_style=openai); non-review roles unaffected.
+- `packages/core/tests/real-llm-4b-routing.test.ts` (NEW) — 5 cases at the core layer: `aggRunMockReviews` honors per-role routing (counterparty → real Anthropic with mode/provider_id provenance; source_consistency → real OpenAI; legal_style → real OpenAI), mixed-provider routing (all three real simultaneously), and default `createMockAggregateContext()` keeps every review role on mock.
+- `packages/web/e2e/real-review.spec.ts` (NEW, gated) — `E2E_REAL_REVIEW=true`-gated end-to-end flow: kim creates project from synthetic source text, walks to a mock v0, calls `run_mock_reviews` so the three real reviewers run in parallel, asserts each AgentRun records mode=real + the correct provider_id, asserts every Issue Card's `source_agent` belongs to the allowed reviewer set.
+
+**Consequence:**
+
+- **Mock remains the default.** Every existing test passes unmodified (one assertion change in `real-llm-routing-4a.test.ts` reflects the documented BREAKING). `npm run verify` continues to make zero network calls.
+- **Single explicit role-allowlist rule for every real-capable role except `deal_memo_drafter`.** Easier to document, easier to audit at deploy time.
+- **2E deployments must update one env var.** Documented in this ADR + the `.env.example` comment on `ANTHROPIC_API_KEY` + the README real-mode table.
+- **No new SDK import.** The SDK isolation test (`packages/core/tests/no-sdk-imports.test.ts`) still restricts `openai` to its provider file and `@anthropic-ai/sdk` to its provider file. Nothing in 4B touches that boundary.
+- **No new aggregate operation, no new client UI flow.** The Review page's "Run reviews" button keeps POSTing `{ name: "run_mock_reviews" }` to `/api/projects/[id]/operations`. The routing decision is invisible to the UI; the Agent Runs panel from 2C automatically shows whichever providers ran.
+- **RBAC from 3L preserved.** The membership check (`run_mock_reviews` permission via `mapOperationToPermission`) fires BEFORE the provider routing, so `business_contributor` / `business_viewer` can NEVER trigger a real Anthropic or real OpenAI call, even with real mode enabled.
+- **Issue-Card-decision invariants from 3C unchanged.** Real-mode reviewer findings still seed pending Issue Cards; the human lawyer still has to decide each one before revision can run.
+- **NOT production-ready for confidential documents.** Same caveat as 4A — synthetic data only until production security controls (auth + RBAC ✓, retention ✗, redaction ✗, audit forwarding to SIEM ✗, on-disk encryption beyond DB defaults ✗) ship.
+- **Forward path is 4C.** Alpha Freeze & Evaluation: pin envs, lock the verify gate, document the limitations explicitly. No further real-LLM roles are wired in the Alpha v0.1 roadmap.
