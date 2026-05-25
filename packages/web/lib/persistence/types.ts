@@ -33,7 +33,7 @@ export interface ProjectSummary {
 
 export interface PersistenceAdapter {
   /** Identifier surfaced in logs and error messages. */
-  readonly driver: "memory" | "file";
+  readonly driver: "memory" | "file" | "postgres";
 
   /** Return every project the adapter knows about, oldest first. */
   listProjects(): Promise<ProjectSummary[]>;
@@ -104,7 +104,48 @@ export class UnknownPersistenceDriverError extends Error {
   readonly code = "UNKNOWN_PERSISTENCE_DRIVER";
   constructor(public readonly driver: string) {
     super(
-      `Unknown PERSISTENCE_DRIVER "${driver}". Expected one of: "memory" (default), "file".`,
+      `Unknown PERSISTENCE_DRIVER "${driver}". Expected one of: "memory" (default), "file", "postgres".`,
     );
   }
+}
+
+/**
+ * Thrown by the factory when PERSISTENCE_DRIVER=postgres but the required
+ * config (DATABASE_URL) is missing or malformed. We refuse to silently
+ * fall back to memory — switching storage backends must always be the
+ * operator's deliberate choice (Milestone 3H scope).
+ */
+export class PostgresConfigError extends Error {
+  readonly code = "POSTGRES_CONFIG_MISSING";
+  constructor(message: string) {
+    super(message);
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Minimal pg-shaped interface (Milestone 3H).
+//
+// The PostgreSQL adapter targets this interface instead of `pg.Pool`
+// directly so unit tests can inject an in-memory fake — `pg` itself is
+// never imported outside `postgres-adapter.ts` (the SDK isolation test
+// in `packages/core/tests/no-sdk-imports.test.ts` enforces this).
+// ─────────────────────────────────────────────────────────────────────
+
+export interface PgQueryResult<R = unknown> {
+  rows: R[];
+}
+
+export interface PgClientLike {
+  query<R = unknown>(text: string, values?: unknown[]): Promise<PgQueryResult<R>>;
+  /** Return the client to its pool. Pure release; no further queries. */
+  release(): void;
+}
+
+export interface PgPoolLike {
+  /** Fire-and-forget single query against an auto-managed connection. */
+  query<R = unknown>(text: string, values?: unknown[]): Promise<PgQueryResult<R>>;
+  /** Acquire a client for multi-statement work (BEGIN / COMMIT). */
+  connect(): Promise<PgClientLike>;
+  /** Optional clean shutdown; only called by tests or graceful exit paths. */
+  end?(): Promise<void>;
 }

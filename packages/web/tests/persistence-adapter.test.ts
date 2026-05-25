@@ -7,10 +7,13 @@ import {
   AppendOnlyViolationError,
   FilePersistenceAdapter,
   MemoryPersistenceAdapter,
+  PostgresConfigError,
+  PostgresPersistenceAdapter,
   UnknownPersistenceDriverError,
   createPersistenceAdapter,
   type PersistenceAdapter,
 } from "../lib/persistence";
+import { FakePgPool } from "./fake-pg-pool";
 import type * as core from "@contractops/core";
 import type { AuditLog, IssueDecisionHistoryEntry } from "@contractops/schemas";
 
@@ -114,6 +117,22 @@ async function fileFactory(): Promise<AdapterFactory & { dir: string }> {
     teardown: async () => {
       await rm(dir, { recursive: true, force: true });
     },
+  };
+}
+
+/**
+ * Postgres factory backed by `FakePgPool`. `build` and `rebuild` share
+ * the same pool so the "survives re-instantiation" contract test sees
+ * the same backend across adapter instances — same shape as the file
+ * factory pointing at the same directory.
+ */
+function postgresFactory(): AdapterFactory & { pool: FakePgPool } {
+  const pool = new FakePgPool();
+  return {
+    name: "PostgresPersistenceAdapter",
+    pool,
+    build: async () => new PostgresPersistenceAdapter(pool),
+    rebuild: async () => new PostgresPersistenceAdapter(pool),
   };
 }
 
@@ -263,6 +282,10 @@ describe("MemoryPersistenceAdapter", () => {
   runContract(async () => memoryFactory());
 });
 
+describe("PostgresPersistenceAdapter (FakePgPool)", () => {
+  runContract(async () => postgresFactory());
+});
+
 describe("FilePersistenceAdapter", () => {
   runContract(async () => fileFactory());
 
@@ -379,5 +402,31 @@ describe("createPersistenceAdapter (factory + env config)", () => {
     expect(() => createPersistenceAdapter({ driver: "sqlite" })).toThrow(
       UnknownPersistenceDriverError,
     );
+  });
+
+  // ── Postgres-specific env validation (Milestone 3H) ──────────────
+
+  it("THROWS PostgresConfigError when driver=postgres but DATABASE_URL is missing", () => {
+    expect(() => createPersistenceAdapter({ driver: "postgres" })).toThrow(
+      PostgresConfigError,
+    );
+  });
+
+  it("THROWS PostgresConfigError when driver=postgres and DATABASE_URL is blank", () => {
+    expect(() =>
+      createPersistenceAdapter({ driver: "postgres", databaseUrl: "   " }),
+    ).toThrow(PostgresConfigError);
+  });
+
+  it("PostgresConfigError carries the documented code POSTGRES_CONFIG_MISSING", () => {
+    try {
+      createPersistenceAdapter({ driver: "postgres" });
+      throw new Error("createPersistenceAdapter should have thrown");
+    } catch (e) {
+      expect(e).toBeInstanceOf(PostgresConfigError);
+      expect((e as PostgresConfigError).code).toBe("POSTGRES_CONFIG_MISSING");
+      // Message should name DATABASE_URL so an operator knows what to set.
+      expect((e as Error).message).toMatch(/DATABASE_URL/);
+    }
   });
 });

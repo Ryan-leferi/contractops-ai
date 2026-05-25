@@ -187,3 +187,39 @@ Guarded surfaces (all call sites already protected by core's `actor.role === "hu
 - No new dependency. The `title` attribute drives the tooltip; no JS tooltip library.
 - A future real-auth milestone replaces the demo registry chokepoint without changing the UI guards: `canActAsLawyer` still receives a fully-formed `Actor`, just one that came from a real session token instead of a `localStorage` selection.
 - Production deployment **still requires real authentication and authorization**. The UI guard is not a security boundary; only the server-side role check is.
+
+---
+
+## ADR-015 — PostgreSQL adapter behind the same `PersistenceAdapter` interface (Milestone 3H)
+
+**Source:** Milestone 3H scope; ADR-012 (pluggable persistence).
+
+**Decision:** Add a third `PersistenceAdapter` implementation, `PostgresPersistenceAdapter`, backed by the [`pg`](https://www.npmjs.com/package/pg) node-postgres driver. Selectable via `PERSISTENCE_DRIVER=postgres` + `DATABASE_URL`. Memory remains the CI / default; file remains the local-dev option; Postgres is the durable, multi-process option.
+
+The schema is bootstrapped lazily on first read or write through idempotent `CREATE TABLE IF NOT EXISTS` / `CREATE INDEX IF NOT EXISTS` statements emitted by the adapter itself — there is **no migration framework** (no Prisma, no Drizzle, no Knex). The four tables mirror the existing in-memory + file shapes:
+
+```
+contractops_projects                 — id PK, name, status, created_at
+contractops_project_states           — project_id PK FK, state JSONB (overwritten on save)
+contractops_audit_logs               — id PK, project_id FK, entry JSONB (append-only)
+contractops_issue_decision_history   — id PK, project_id FK, entry JSONB (append-only)
+```
+
+`createProject` and `saveProjectState` wrap multi-row writes in `BEGIN / COMMIT / ROLLBACK` via `pool.connect()`. `appendAuditLog` and `appendDecisionHistory` catch PostgreSQL's `23505` unique-violation SQLSTATE on duplicate-id INSERTs and rethrow as `AppendOnlyViolationError`, so the append-only contract is byte-identical to the memory and file adapters.
+
+Test infrastructure:
+
+- The adapter targets a minimal `PgPoolLike` interface (`query / connect / end`), not `pg.Pool` directly. Unit tests inject `FakePgPool` (in-memory SQL pattern matcher; throws synthetic `{ code: "23505" }` on duplicate INSERTs) and run the same contract suite as memory and file (`persistence-adapter.test.ts`).
+- A separate `persistence-postgres-unit.test.ts` covers postgres-specific deep tests (bootstrap idempotency, transactional rollback on `createProject` collisions, `close() → pool.end()` forwarding).
+- A gated integration test (`persistence-postgres-integration.test.ts`, `POSTGRES_INTEGRATION=true` + `DATABASE_URL`) runs the same scenario against a real PostgreSQL endpoint. CI never sets the gate.
+
+`pg` isolation is enforced the same way `openai`, `@anthropic-ai/sdk`, and `docx` are: the `no-sdk-imports` test refuses any `import "pg"` outside `packages/web/lib/persistence/postgres-adapter.ts`. The Next webpack config aliases `pg: false` on the client and includes `pg` in `experimental.serverComponentsExternalPackages`.
+
+**Consequence:**
+
+- Adding the Postgres adapter required **zero** changes to `core` workflow code, API routes, the StoreProvider, or any UI page. The boundary established by ADR-012 worked exactly as designed.
+- `npm run verify` is unchanged — memory remains the default, so the standard CI pipeline doesn't require Postgres. Switching to Postgres is always the operator's deliberate choice (`PostgresConfigError` blocks startup if `DATABASE_URL` is missing; **no silent fallback** to memory).
+- The schema is the simplest thing that satisfies the persistence contract: JSONB everywhere except the project summary table. We can normalize later if a future feature actually needs it; over-normalizing now would lock us into a migration framework before we know which queries matter.
+- Postgres fixes **durability and concurrency**. It does NOT fix identity, RBAC, encryption-at-rest beyond what the DB provides, or row-level access control. ADR-013 (demo actor) and ADR-014 (lawyer-only guards) remain in place; production deployment still requires real authentication and project-level authorization on top — Postgres is necessary but not sufficient.
+- Confidential source documents remain forbidden in any adapter (PLATFORM_BRIEF.md §10, §12 rule 6). The Postgres adapter is no exception. Generated `.docx` and `_cover_email.md` binaries are still never stored — `ExportFile.content` is a text summary inside the JSONB ProjectState column.
+- TLS is opt-in via `POSTGRES_SSL=true` (passes `rejectUnauthorized: false`, suitable for managed providers like Supabase / Neon / RDS that present chains the local trust store doesn't carry). Hardened deployments should swap `createPgPool` for a factory that passes a real CA bundle.
