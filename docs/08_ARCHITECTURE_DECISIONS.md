@@ -468,3 +468,62 @@ Test infrastructure:
 - **NOT production RBAC.** Still missing: organization-level multi-tenancy, group sync (SCIM / Workday / Azure AD), per-jurisdiction policy, per-record ACLs, time-bounded delegations, role inheritance, fine-grained content sensitivity (PII / privileged-communication tagging). Production deployment must layer real OAuth/SSO + group-derived membership + jurisdiction-aware policy on top — post-Alpha. ADR-019 is a MINIMAL seam, not the final model.
 - **No new dependencies.** Membership ids come from `node:crypto.randomUUID`. No `casl`, `accesscontrol`, `oso`, or policy-engine package added.
 - **Server-store remains the integration point.** The two new helpers (`addMembershipToProject`, `disableMembershipInProject`) live next to `applyOperationToStore` and use the same persistence adapter, the same audit-log append path, and the same idempotency semantics. A future Postgres-backed membership index reuses the same helper surface.
+
+---
+
+## ADR-020 — Per-role real-LLM allowlist for contract_drafter + revision_agent (Milestone 4A)
+
+**Source:** Milestone 4A scope; ADR-016 (auth boundary), ADR-019 (project RBAC), Milestone 2C (OpenAI provider seam), Milestone 2E (Anthropic provider seam).
+
+**Decision:** Wire the existing provider seam so the `contract_drafter` (v0 draft) and `revision_agent` (revision version) roles can run against the existing OpenAI provider when real mode is explicitly enabled. Add a new `REAL_LLM_ROLE_ALLOWLIST` env var as a SECOND independent gate (on top of `USE_REAL_LLM` + `LLM_PROVIDER_ALLOWLIST` + the matching API key). No new provider SDK, no new agent role, no new aggregate operation.
+
+Gating semantics (per role):
+
+```
+deal_memo_drafter (2C):     USE_REAL_LLM + LLM_PROVIDER_ALLOWLIST.includes("openai")
+                            + OPENAI_API_KEY   → real / else mock
+counterparty_reviewer (2E): USE_REAL_LLM + LLM_PROVIDER_ALLOWLIST.includes("anthropic")
+                            + ANTHROPIC_API_KEY → real / else mock
+contract_drafter (4A):      ALL of the above (openai variant) AND
+                            REAL_LLM_ROLE_ALLOWLIST.includes("contract_drafter")
+                                                 → real / else mock
+revision_agent (4A):        ALL of the above (openai variant) AND
+                            REAL_LLM_ROLE_ALLOWLIST.includes("revision_agent")
+                                                 → real / else mock
+```
+
+Backward compat: 2C / 2E roles intentionally DO NOT require a `REAL_LLM_ROLE_ALLOWLIST` entry. Existing deployments that already set `USE_REAL_LLM=true` + `LLM_PROVIDER_ALLOWLIST=openai,anthropic` for the Deal Memo + counterparty reviewer roles continue to work without touching their env. The role allowlist is a NEW additive gate that applies only to the roles introduced in 4A — adding a third role to real mode in the future will follow the same pattern.
+
+Why the extra gate (rather than reusing the provider allowlist alone)? `contract_drafter` produces the entire v0 contract body (longest, costliest call) and `revision_agent` mutates it; both are higher-stakes than a single-page Deal Memo. Coupling them to the same provider switch would mean flipping `USE_REAL_LLM=true` to enable the Deal Memo silently enables full real-mode contract generation. The 4A gate makes that an explicit, audit-trail-friendly ops decision.
+
+Implementation surface (server-only):
+
+- `packages/core/src/env-config.ts` — adds `REAL_LLM_ROLE_ALLOWLIST: string[]` to `EnvConfig` + the default. CSV-parsed via the existing `parseList` helper.
+- `packages/web/lib/server-aggregate-context.ts` — `tryReal(role)` extended with two new branches (contract_drafter + revision_agent) that check the role allowlist before calling `core.selectProviderByName("openai", envConfig)`.
+- No changes to `selectProvider` / `selectProviderByName` / agent functions / aggregate ops / API routes / proxy providers. The existing `getProvider(role)` seam introduced in 2C absorbs the new wiring.
+- No changes to `prompts/contract_drafter.md` or `prompts/revision_agent.md` — both already meet the 4A spec (Playbook-driven, mandatory clauses, source list, intake, Korean drafting conventions, no internal commentary in body, strict JSON output).
+
+Structured output validation: handled by the existing `OpenAI provider's completeJson` path — schema validation against `contractDraftOutputSchema` / `revisionOutputSchema`, single corrective retry on the first JSON-shape failure, throw on the second. The aggregate dispatcher converts the throw into a failed `AgentRun` row without appending a `ContractVersion`. Tests assert: invalid output → no version added.
+
+AgentRun provenance: already complete in the schema (provider_id, model_id, mode, role, prompt_version, input_hash, output_json, status, started_at, completed_at, token_usage, cost_estimate, error_message). The real-mode runs populate every field; the existing Agent Runs UI panel from 2C already shows `provider_id` + `mode`.
+
+Rejected Issue Cards: the revision agent prompt already lists only `accepted` + `partially_accepted` cards (filtered inside `aggCreateRevision` BEFORE the prompt is rendered). Tests assert the rejected card's `issue_id` does NOT appear in the prompt text sent to the provider.
+
+Test infrastructure:
+
+- `packages/core/tests/env-config.test.ts` — extended with `REAL_LLM_ROLE_ALLOWLIST` CSV-parse cases + default value.
+- `packages/core/tests/real-llm-4a-routing.test.ts` (NEW) — 6 cases: `aggCreateV0` routes through real OpenAI when `getProvider("contract_drafter")` returns it, AgentRun records mode=real + provider_id=openai, invalid drafter output → no ContractVersion; `aggCreateRevision` routes through real OpenAI for `revision_agent`, rejected/deferred Issue Card ids are NEVER in the prompt, invalid revision output → no new version; default mock context routes every role to mock.
+- `packages/web/tests/real-llm-routing-4a.test.ts` (NEW) — 10 cases: `buildServerAggregateContext` honors the role allowlist; missing `REAL_LLM_ROLE_ALLOWLIST` keeps drafter + revision on mock even with `USE_REAL_LLM=true` + `LLM_PROVIDER_ALLOWLIST=openai`; explicit allowlist enables them independently; missing `OPENAI_API_KEY` silently falls back to mock; wrong provider allowlist (anthropic-only) keeps drafter on mock; 2C `deal_memo_drafter` + 2E `counterparty_reviewer` retain backward-compat gating.
+- All 4 EnvConfig literal sites in core tests (`provider.test.ts`, `anthropic-provider.test.ts`, `no-sdk-imports.test.ts`) updated to include `REAL_LLM_ROLE_ALLOWLIST: []`.
+- `packages/web/e2e/real-contract-draft.spec.ts` (NEW, gated) — `E2E_REAL_CONTRACT_DRAFT=true`-gated end-to-end flow: kim creates project from synthetic source text, walks to drafting_plan_approved, generates v0 via real OpenAI, mixes accept/reject Issue Card decisions, generates revision via real OpenAI, asserts AgentRun provenance + content non-empty + rejected card text NOT in revision.
+
+**Consequence:**
+
+- **Mock remains the default.** Every existing test passes unmodified except the four EnvConfig literal additions. `npm run verify` does not touch the network.
+- **2C + 2E behavior unchanged.** Deployments using the Deal Memo or counterparty reviewer real mode do not need to update their env. The new role allowlist is additive.
+- **No new SDK import.** Neither `openai` nor `@anthropic-ai/sdk` is imported outside the two provider files the SDK isolation test already permits.
+- **No new aggregate operation, no new client UI flow.** From the UI's perspective, generating v0 still POSTs `{ name: "create_v0" }` to `/api/projects/[id]/operations`; the routing decision happens entirely inside `server-aggregate-context.ts`. The Generate v0 / Generate revision buttons keep working identically — only the body content changes when real mode is fully configured.
+- **RBAC from 3L preserved.** The membership check (`view_project` / `create_v0` / `create_revision` permission via `mapOperationToPermission`) fires BEFORE the provider routing, so `business_contributor` / `business_viewer` can NEVER trigger a real OpenAI call, even with real mode enabled.
+- **Invalid LLM output cannot become a ContractVersion.** The provider's JSON validator + retry-once + throw-on-second-failure path was already in place from 2C; the aggregate dispatcher surfaces the throw and skips the state mutation. Tests pin this contract.
+- **NOT production-ready for confidential documents.** The Alpha v0.1 spec is explicit: use synthetic / sanitized source text only. Real client data awaits production security controls (auth + RBAC ✓ for the seam, retention policy ✗, redaction ✗, audit forwarding to SIEM ✗, on-disk encryption beyond DB defaults ✗).
+- **Forward path is 4B.** Real review / source-consistency seam reuses the same `REAL_LLM_ROLE_ALLOWLIST` mechanism — adding `counterparty_reviewer_real` / `source_consistency_reviewer` entries follows the same pattern as 4A.

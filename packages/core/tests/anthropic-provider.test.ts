@@ -140,6 +140,7 @@ describe("selectProvider — anthropic branch", () => {
       LLM_PROVIDER_ALLOWLIST: ["anthropic"],
       OPENAI_MODEL: null,
       ANTHROPIC_MODEL: "claude-3-5-sonnet-20241022",
+      REAL_LLM_ROLE_ALLOWLIST: [],
       LLM_LOG_PROMPTS: false,
     });
     expect(p.provider_id).toBe("anthropic");
@@ -156,6 +157,7 @@ describe("selectProvider — anthropic branch", () => {
       LLM_PROVIDER_ALLOWLIST: ["openai", "anthropic"],
       OPENAI_MODEL: null,
       ANTHROPIC_MODEL: null,
+      REAL_LLM_ROLE_ALLOWLIST: [],
       LLM_LOG_PROMPTS: false,
     });
     expect(p.provider_id).toBe("openai");
@@ -171,7 +173,8 @@ describe("selectProvider — anthropic branch", () => {
         LLM_PROVIDER_ALLOWLIST: ["anthropic"],
         OPENAI_MODEL: null,
         ANTHROPIC_MODEL: null,
-        LLM_LOG_PROMPTS: false,
+        REAL_LLM_ROLE_ALLOWLIST: [],
+      LLM_LOG_PROMPTS: false,
       }),
     ).toThrowError(/ANTHROPIC_API_KEY is not set/);
   });
@@ -185,6 +188,7 @@ describe("selectProvider — anthropic branch", () => {
       LLM_PROVIDER_ALLOWLIST: ["anthropic"],
       OPENAI_MODEL: null,
       ANTHROPIC_MODEL: null,
+      REAL_LLM_ROLE_ALLOWLIST: [],
       LLM_LOG_PROMPTS: false,
     });
     expect(p.mode).toBe("mock");
@@ -201,6 +205,7 @@ describe("selectProviderByName", () => {
       LLM_PROVIDER_ALLOWLIST: ["openai", "anthropic"],
       OPENAI_MODEL: null,
       ANTHROPIC_MODEL: null,
+      REAL_LLM_ROLE_ALLOWLIST: [],
       LLM_LOG_PROMPTS: false,
     });
     expect(p.provider_id).toBe("anthropic");
@@ -215,6 +220,7 @@ describe("selectProviderByName", () => {
       LLM_PROVIDER_ALLOWLIST: ["openai", "anthropic"],
       OPENAI_MODEL: null,
       ANTHROPIC_MODEL: null,
+      REAL_LLM_ROLE_ALLOWLIST: [],
       LLM_LOG_PROMPTS: false,
     });
     expect(p.provider_id).toBe("openai");
@@ -230,7 +236,8 @@ describe("selectProviderByName", () => {
         LLM_PROVIDER_ALLOWLIST: ["openai"], // anthropic NOT allowlisted
         OPENAI_MODEL: null,
         ANTHROPIC_MODEL: null,
-        LLM_LOG_PROMPTS: false,
+        REAL_LLM_ROLE_ALLOWLIST: [],
+      LLM_LOG_PROMPTS: false,
       }),
     ).toThrowError(ProviderRealModeNotConfiguredError);
   });
@@ -244,6 +251,7 @@ describe("selectProviderByName", () => {
       LLM_PROVIDER_ALLOWLIST: ["anthropic"],
       OPENAI_MODEL: null,
       ANTHROPIC_MODEL: null,
+      REAL_LLM_ROLE_ALLOWLIST: [],
       LLM_LOG_PROMPTS: false,
     });
     expect(p.mode).toBe("mock");

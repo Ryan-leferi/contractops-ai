@@ -277,6 +277,7 @@ describe("Real LLM SDK imports are tightly scoped (Milestone 2E)", () => {
       LLM_PROVIDER_ALLOWLIST: ["openai"],
       OPENAI_MODEL: null,
       ANTHROPIC_MODEL: null,
+      REAL_LLM_ROLE_ALLOWLIST: [],
       LLM_LOG_PROMPTS: false,
     });
     expect(p.provider_id).toBe("openai");
@@ -293,7 +294,8 @@ describe("Real LLM SDK imports are tightly scoped (Milestone 2E)", () => {
         LLM_PROVIDER_ALLOWLIST: [],
         OPENAI_MODEL: null,
         ANTHROPIC_MODEL: null,
-        LLM_LOG_PROMPTS: false,
+        REAL_LLM_ROLE_ALLOWLIST: [],
+      LLM_LOG_PROMPTS: false,
       }),
     ).toThrow();
   });

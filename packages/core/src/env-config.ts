@@ -23,6 +23,23 @@ export interface EnvConfig {
    * If empty, no real provider is allowed even with USE_REAL_LLM=true.
    */
   LLM_PROVIDER_ALLOWLIST: string[];
+  /**
+   * Per-ROLE allowlist for real-mode execution (Milestone 4A). Roles
+   * NOT on this list always use the mock provider, even when
+   * USE_REAL_LLM=true and LLM_PROVIDER_ALLOWLIST includes a provider.
+   *
+   * Defaults to empty. Designed to prevent accidental real-LLM usage
+   * across every role just because the master switch is on — adding a
+   * new role to real mode is an explicit ops decision.
+   *
+   * Roles introduced BEFORE 4A (`deal_memo_drafter` from 2C and
+   * `counterparty_reviewer` from 2E) remain governed by their
+   * milestone-specific gating (provider allowlist only) to preserve
+   * backward compatibility with existing deployments. New roles
+   * (`contract_drafter` and `revision_agent` from 4A onward) MUST be
+   * on this list to run real.
+   */
+  REAL_LLM_ROLE_ALLOWLIST: string[];
   /** If true, prompts are written to console/log for debugging. Default: false. */
   LLM_LOG_PROMPTS: boolean;
 }
@@ -54,6 +71,7 @@ export function readEnvConfig(env: EnvSource = (typeof process !== "undefined" ?
     OPENAI_MODEL: env.OPENAI_MODEL?.trim() || null,
     ANTHROPIC_MODEL: env.ANTHROPIC_MODEL?.trim() || null,
     LLM_PROVIDER_ALLOWLIST: parseList(env.LLM_PROVIDER_ALLOWLIST),
+    REAL_LLM_ROLE_ALLOWLIST: parseList(env.REAL_LLM_ROLE_ALLOWLIST),
     LLM_LOG_PROMPTS: parseBool(env.LLM_LOG_PROMPTS, false),
   };
 }
@@ -66,5 +84,6 @@ export const DEFAULT_ENV_CONFIG: EnvConfig = {
   OPENAI_MODEL: null,
   ANTHROPIC_MODEL: null,
   LLM_PROVIDER_ALLOWLIST: [],
+  REAL_LLM_ROLE_ALLOWLIST: [],
   LLM_LOG_PROMPTS: false,
 };
