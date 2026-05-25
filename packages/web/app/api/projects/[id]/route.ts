@@ -16,12 +16,12 @@ export async function GET(
   ctx: { params: { id: string } },
 ) {
   const id = ctx.params.id;
-  const state = getProjectState(id);
+  const state = await getProjectState(id);
   if (!state) {
     return NextResponse.json(
       { error: `project not found: ${id}`, code: "PROJECT_NOT_FOUND" },
       { status: 404 },
     );
   }
-  return NextResponse.json({ state, audits: getProjectAudits(id) });
+  return NextResponse.json({ state, audits: await getProjectAudits(id) });
 }

@@ -157,6 +157,65 @@ npm run dev -w @contractops/web    # http://localhost:3000
 
 `*.docx` and `*_cover_email.md` are gitignored, and `npm run repo:hygiene` refuses to allow a tracked artifact of either shape. Generated exports from local runs land in your Downloads folder; never commit them. Ordinary documentation Markdown files (`README.md`, `CLAUDE.md`, `docs/*.md`) remain trackable — only the renderer-suffixed `*_cover_email.md` is treated as a generated artifact.
 
+## Persistence (Milestones 3D + 3E)
+
+State for the web app — `ProjectState`, `AuditLog`, `IssueDecisionHistoryEntry` — flows through a single `PersistenceAdapter` interface (`packages/web/lib/persistence/`). Two adapters ship:
+
+| `PERSISTENCE_DRIVER` | Adapter | Default? | Used for |
+|---|---|---|---|
+| `memory` (or unset) | `MemoryPersistenceAdapter` — `globalThis`-pinned `Map` | ✅ default | CI, the mock-mode `npm run dev` flow, every Vitest / Playwright test that doesn't explicitly enable the file adapter |
+| `file` | `FilePersistenceAdapter` — JSON snapshot + JSONL journals under `PERSISTENCE_FILE_PATH` (default `./.contractops-data/`) | opt-in | Local dev/demo runs where you want state to survive a server restart |
+
+Any other value (including `sqlite`, reserved for a future adapter) throws `UnknownPersistenceDriverError` at boot. **There is no silent fallback** — switching storage is always deliberate.
+
+### Memory mode (default)
+
+```bash
+npm run dev -w @contractops/web   # PERSISTENCE_DRIVER=memory implied
+```
+
+State lives in the Next.js server process memory. Lost on every restart. CI runs in memory mode unconditionally.
+
+### Durable local mode (file adapter)
+
+```bash
+PERSISTENCE_DRIVER=file \
+PERSISTENCE_FILE_PATH=.contractops-data \
+  npm run dev -w @contractops/web
+```
+
+Layout under `PERSISTENCE_FILE_PATH/projects/`:
+
+```
+<project_id>.project.json   # full ProjectState snapshot (overwritten per save)
+<project_id>.audits.jsonl   # one AuditLog per line, append-only
+<project_id>.history.jsonl  # one IssueDecisionHistoryEntry per line, append-only
+```
+
+**Local dev only — NOT production:**
+
+- No auth, no row-level permissions, no encryption, no multi-process locking. A single Next.js process per `PERSISTENCE_FILE_PATH` is the only supported deployment.
+- Real confidential source documents MUST NOT be saved into either adapter — only synthetic / sanitized text belongs here (PLATFORM_BRIEF.md §10, §12 rule 6).
+- Generated `.docx` and `_cover_email.md` binaries are **never** written into persistence; `ExportFile.content` is a text summary. The on-disk file layout is gitignored (`.contractops-data/`, `*.db`, `*.sqlite*`) and `npm run repo:hygiene` refuses to allow them tracked.
+- Append-only is enforced at the adapter level: a duplicate audit or decision-history id throws `AppendOnlyViolationError` before any disk write.
+
+### Future PostgreSQL migration
+
+The next milestone replaces `lib/persistence/file-adapter.ts` with a real database-backed adapter (PostgreSQL or similar). Because every callsite goes through the `PersistenceAdapter` interface, the swap is a one-file addition plus an env-var rename — no API routes, page code, or aggregate logic need to move.
+
+### Optional durable E2E
+
+`packages/web/e2e/durable-persistence.spec.ts` is gated by `E2E_DURABLE_PERSISTENCE=true`. CI keeps it skipped. To run locally:
+
+```bash
+E2E_DURABLE_PERSISTENCE=true \
+PERSISTENCE_DRIVER=file \
+PERSISTENCE_FILE_PATH=.tmp-e2e-data \
+  npm run e2e -w @contractops/web
+```
+
+It creates a project, walks to "issues_open", rejects an Issue Card, then opens a **fresh browser context** and verifies the project and the decision history both still exist — proving the disk-backed store survives the simulated tab-close.
+
 ## Server-side in-memory store (Milestone 3D)
 
 The web MVP is now backed by a **server-side in-memory project store**. The browser is no longer the source of truth — `localStorage` is unused for project data.

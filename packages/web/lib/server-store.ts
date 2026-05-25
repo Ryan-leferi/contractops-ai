@@ -1,26 +1,17 @@
 /**
- * Server-side in-memory project store (Milestone 3D).
+ * Server-side project store façade (Milestones 3D + 3E).
  *
  *   ┌──────────────────────────────────────────────────────────────┐
- *   │ NOT FOR PRODUCTION.                                           │
- *   │   - Resets on every server restart.                            │
- *   │   - No durability, no replication, no auth.                    │
- *   │   - Holds whatever a developer / demo session POSTs into it.   │
- *   │   - Real persistence (PostgreSQL or another durable database)  │
- *   │     is out of scope for this milestone and explicitly forbidden│
- *   │     by the prompt; it will arrive in a later milestone.         │
+ *   │ Storage backend is now pluggable via `PersistenceAdapter`.    │
+ *   │   - memory  (default; CI + mock-mode dev)                     │
+ *   │   - file    (PERSISTENCE_DRIVER=file; durable local dev only) │
+ *   │                                                               │
+ *   │ Both are NON-PRODUCTION. Real PostgreSQL persistence lands    │
+ *   │ in a future milestone behind the same adapter interface.      │
  *   └──────────────────────────────────────────────────────────────┘
  *
- * The store lives on `globalThis` so it survives Next.js dev HMR rebuilds
- * (which re-execute module bodies). It is intentionally not exported as
- * an object — only via the function API below — so client components
- * cannot grab a reference and mutate it accidentally.
- *
- * SERVER ONLY. The SDK isolation test in
- * `packages/core/tests/no-sdk-imports.test.ts` fails the build if any
- * file inside `packages/web/app/projects/**` or `packages/web/components/**`
- * imports this module. Only files under `packages/web/app/api/**` may
- * pull it in.
+ * SERVER ONLY. Importing this from a client component is caught by the
+ * SDK isolation test in `packages/core/tests/no-sdk-imports.test.ts`.
  */
 
 import * as core from "@contractops/core";
@@ -29,12 +20,7 @@ import type {
   AuditLog,
   ExportType,
   IssueDecisionHistoryEntry,
-  Playbook,
 } from "@contractops/schemas";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
-import { playbookSchema } from "@contractops/schemas";
 
 import {
   buildServerAggregateContext,
@@ -48,120 +34,49 @@ import { isKnownOperationName } from "./operations";
 // so the server-side aggregate ops can render LLM prompts. Idempotent
 // across multiple imports.
 import { ensureServerPromptsLoaded } from "./preload-server-prompts";
+import {
+  selectPersistenceAdapter,
+  type PersistenceAdapter,
+  type ProjectSummary,
+} from "./persistence";
 
 // ─────────────────────────────────────────────────────────────────────
-// Singleton state pinned on globalThis so HMR (dev only) does not
-// recreate the maps each time a route handler module is re-evaluated.
-// In production this is the same as a plain module-level singleton.
+// Adapter resolution — the only place that touches the persistence
+// boundary directly. Every other public function here goes through
+// `adapter()` so route handlers cannot accidentally bypass it.
 // ─────────────────────────────────────────────────────────────────────
 
-interface ServerStoreState {
-  projects: Map<string, core.ProjectState>;
-  /** Audit log per project — append-only, in insertion order. */
-  audits: Map<string, AuditLog[]>;
+function adapter(): PersistenceAdapter {
+  return selectPersistenceAdapter();
 }
 
-const GLOBAL_KEY = "__contractops_server_store__";
-
-function loadOrCreate(): ServerStoreState {
-  const g = globalThis as Record<string, unknown>;
-  const existing = g[GLOBAL_KEY] as ServerStoreState | undefined;
-  if (existing) return existing;
-  const fresh: ServerStoreState = {
-    projects: new Map(),
-    audits: new Map(),
-  };
-  g[GLOBAL_KEY] = fresh;
-  return fresh;
-}
-
-function store(): ServerStoreState {
-  return loadOrCreate();
-}
-
-// ─────────────────────────────────────────────────────────────────────
-// Playbook loader (cached for the process lifetime).
-// ─────────────────────────────────────────────────────────────────────
-
-let cachedPlaybooks: Playbook[] | null = null;
-function loadPlaybooks(): Playbook[] {
-  if (cachedPlaybooks) return cachedPlaybooks;
-  const dir = findPlaybooksDir();
-  const files = readdirSync(dir).filter((f) => f.endsWith(".json"));
-  const list = files.map((f) =>
-    playbookSchema.parse(JSON.parse(readFileSync(join(dir, f), "utf-8"))),
-  );
-  cachedPlaybooks = list;
-  return list;
-}
-
-/**
- * Locate the repo's `playbooks/` directory regardless of who invoked us.
- * Tries (in order):
- *   1. cwd/playbooks       — repo-root invocations (vitest, fixture)
- *   2. cwd/../../playbooks — packages/web invocations (`npm run dev -w @contractops/web`)
- *   3. walking up from this source file until we find one
- *
- * Throws a clear error if none works so configuration mistakes surface
- * early instead of crashing inside the JSON parser.
- */
-function findPlaybooksDir(): string {
-  const cwd = process.cwd();
-  const candidates = [
-    join(cwd, "playbooks"),
-    join(cwd, "..", "..", "playbooks"),
-  ];
-  for (const c of candidates) {
-    if (existsSync(c)) return c;
-  }
-  let dir = dirname(fileURLToPath(import.meta.url));
-  for (let i = 0; i < 8; i++) {
-    const candidate = join(dir, "playbooks");
-    if (existsSync(candidate)) return candidate;
-    dir = dirname(dir);
-  }
-  throw new Error(
-    `playbooks/ directory not found. Tried cwd=${cwd} and ${candidates.length} fallback paths.`,
-  );
-}
+export type { ProjectSummary } from "./persistence";
 
 // ─────────────────────────────────────────────────────────────────────
 // Read-side API
 // ─────────────────────────────────────────────────────────────────────
 
-export interface ProjectSummary {
-  id: string;
-  name: string;
-  status: string;
-  created_at: string;
+export async function listProjectSummaries(): Promise<ProjectSummary[]> {
+  return adapter().listProjects();
 }
 
-export function listProjectSummaries(): ProjectSummary[] {
-  return Array.from(store().projects.values())
-    .sort((a, b) => a.project.created_at.localeCompare(b.project.created_at))
-    .map((p) => ({
-      id: p.project.id,
-      name: p.project.name,
-      status: p.project.status,
-      created_at: p.project.created_at,
-    }));
+export async function getProjectState(id: string): Promise<core.ProjectState | null> {
+  return adapter().getProjectState(id);
 }
 
-export function getProjectState(id: string): core.ProjectState | null {
-  return store().projects.get(id) ?? null;
+export async function getProjectAudits(id: string): Promise<AuditLog[]> {
+  return adapter().listAuditLogs(id);
 }
 
-export function getProjectAudits(id: string): AuditLog[] {
-  return (store().audits.get(id) ?? []).slice();
-}
-
-export function getProjectDecisionHistory(id: string): IssueDecisionHistoryEntry[] {
-  const p = store().projects.get(id);
-  return (p?.decision_history ?? []).slice();
+export async function getProjectDecisionHistory(
+  id: string,
+): Promise<IssueDecisionHistoryEntry[]> {
+  return adapter().listDecisionHistory(id);
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// Write-side API — every mutation goes through an aggregate op.
+// Write-side API — every mutation goes through an aggregate op so the
+// workflow logic (PLATFORM_BRIEF.md §2 / §5) stays in @contractops/core.
 // ─────────────────────────────────────────────────────────────────────
 
 export interface ApplyResult {
@@ -169,30 +84,27 @@ export interface ApplyResult {
   audits: AuditLog[];
 }
 
-export function createProjectInStore(name: string): ApplyResult {
+export async function createProjectInStore(name: string): Promise<ApplyResult> {
   ensureServerPromptsLoaded();
   const env = makeServerEnv();
-  const res = core.aggCreateProject(
-    { name, created_by: getDemoUser() },
-    env,
-  );
-  store().projects.set(res.state.project.id, res.state);
-  store().audits.set(res.state.project.id, res.audits.slice());
+  const res = core.aggCreateProject({ name, created_by: getDemoUser() }, env);
+  const creationAudit = res.audits[0]!;
+  await adapter().createProject(res.state, creationAudit);
   return { state: res.state, audits: res.audits };
 }
 
 /**
- * Apply a single named operation to a project. The dispatcher below is
- * exhaustive over the `Operation` discriminated union — if a new
- * operation is added to `operations.ts`, TypeScript will fail to
- * compile this function until the new case is wired up.
+ * Apply a single named operation. The dispatcher below is exhaustive
+ * over the `Operation` discriminated union — if a new op is added to
+ * `operations.ts`, TypeScript fails to compile this file until wired.
  */
 export async function applyOperationToStore(
   projectId: string,
   op: Operation,
 ): Promise<ApplyResult> {
   ensureServerPromptsLoaded();
-  const current = store().projects.get(projectId);
+  const a = adapter();
+  const current = await a.getProjectState(projectId);
   if (!current) {
     throw new ProjectNotFoundError(projectId);
   }
@@ -204,10 +116,24 @@ export async function applyOperationToStore(
 
   const result = await dispatch(current, op, env, lawyer, user, ctx);
 
-  // Persist new state and append audits.
-  store().projects.set(projectId, result.state);
-  const existingAudits = store().audits.get(projectId) ?? [];
-  store().audits.set(projectId, [...existingAudits, ...result.audits]);
+  // Persist the new ProjectState snapshot first so a subsequent read
+  // sees the latest state even if an append below fails. The append-only
+  // journals are the formal audit trail; the snapshot is convenience.
+  await a.saveProjectState(result.state);
+
+  // Then append the new audit rows emitted by this op (zero or more).
+  for (const audit of result.audits) {
+    await a.appendAuditLog(projectId, audit);
+  }
+
+  // And append the new decision_history rows. Today only
+  // `aggDecideIssue` appends to `state.decision_history`, so the diff is
+  // at most one row, but compute it generically to stay forward-compatible.
+  const previousLen = current.decision_history.length;
+  const newHistory = result.state.decision_history.slice(previousLen);
+  for (const entry of newHistory) {
+    await a.appendDecisionHistory(projectId, entry);
+  }
 
   return { state: result.state, audits: result.audits };
 }
@@ -294,27 +220,68 @@ async function dispatch(
 }
 
 // ─────────────────────────────────────────────────────────────────────
+// Playbook loader (cached for the process lifetime).
+// ─────────────────────────────────────────────────────────────────────
+
+import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { type Playbook, playbookSchema } from "@contractops/schemas";
+
+let cachedPlaybooks: Playbook[] | null = null;
+function loadPlaybooks(): Playbook[] {
+  if (cachedPlaybooks) return cachedPlaybooks;
+  const dir = findPlaybooksDir();
+  const files = readdirSync(dir).filter((f) => f.endsWith(".json"));
+  const list = files.map((f) =>
+    playbookSchema.parse(JSON.parse(readFileSync(join(dir, f), "utf-8"))),
+  );
+  cachedPlaybooks = list;
+  return list;
+}
+
+function findPlaybooksDir(): string {
+  const cwd = process.cwd();
+  const candidates = [
+    join(cwd, "playbooks"),
+    join(cwd, "..", "..", "playbooks"),
+  ];
+  for (const c of candidates) {
+    if (existsSync(c)) return c;
+  }
+  let dir = dirname(fileURLToPath(import.meta.url));
+  for (let i = 0; i < 8; i++) {
+    const candidate = join(dir, "playbooks");
+    if (existsSync(candidate)) return candidate;
+    dir = dirname(dir);
+  }
+  throw new Error(
+    `playbooks/ directory not found. Tried cwd=${cwd} and ${candidates.length} fallback paths.`,
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────
 // Dev-only utilities
 // ─────────────────────────────────────────────────────────────────────
 
-/**
- * Drop every project and every audit log. Used by the dev/demo
- * `/api/projects/reset` route. Production callers should be blocked at
- * the route layer — see `app/api/projects/reset/route.ts`.
- */
-export function resetStore(): void {
-  store().projects.clear();
-  store().audits.clear();
+export async function resetStore(): Promise<void> {
+  await adapter().resetDemoStore();
 }
 
-// Exported for tests that want to introspect store size.
-export function debugStoreSizes(): { projects: number; auditedProjects: number; totalAudits: number } {
-  const s = store();
-  return {
-    projects: s.projects.size,
-    auditedProjects: s.audits.size,
-    totalAudits: Array.from(s.audits.values()).reduce((n, arr) => n + arr.length, 0),
-  };
+/** Debug-only: project count + total audits. Used by tests. */
+export async function debugStoreSizes(): Promise<{
+  projects: number;
+  totalAudits: number;
+  totalHistory: number;
+}> {
+  const list = await adapter().listProjects();
+  let totalAudits = 0;
+  let totalHistory = 0;
+  for (const p of list) {
+    totalAudits += (await adapter().listAuditLogs(p.id)).length;
+    totalHistory += (await adapter().listDecisionHistory(p.id)).length;
+  }
+  return { projects: list.length, totalAudits, totalHistory };
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -337,8 +304,7 @@ export class UnknownOperationError extends Error {
 
 /**
  * Helper used by the operations route to validate the posted body
- * before handing it to `applyOperationToStore`. Returns the typed
- * operation or throws.
+ * before handing it to `applyOperationToStore`.
  */
 export function parseOperationOrThrow(raw: unknown): Operation {
   if (typeof raw !== "object" || raw === null) {
@@ -349,18 +315,11 @@ export function parseOperationOrThrow(raw: unknown): Operation {
   if (!isKnownOperationName(name)) {
     throw new UnknownOperationError(name);
   }
-  // Args validation happens inside the core aggregate calls, which
-  // already throw clear errors. We only need to ensure args is an
-  // object here.
   if (typeof args !== "object" || args === null) {
     throw new Error(`operation '${name}' args must be an object`);
   }
   return { name, args } as Operation;
 }
-
-// Type-export the loadPlaybooks shape so the operations route can
-// inspect cache state in tests without re-implementing the loader.
-export { loadPlaybooks as __loadPlaybooks_for_tests };
 
 // Re-export ExportType so route handlers can validate without a deep import.
 export type { ExportType };

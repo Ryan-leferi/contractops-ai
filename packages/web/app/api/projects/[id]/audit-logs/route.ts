@@ -13,11 +13,11 @@ export async function GET(
   ctx: { params: { id: string } },
 ) {
   const id = ctx.params.id;
-  if (!getProjectState(id)) {
+  if (!(await getProjectState(id))) {
     return NextResponse.json(
       { error: `project not found: ${id}`, code: "PROJECT_NOT_FOUND" },
       { status: 404 },
     );
   }
-  return NextResponse.json({ audits: getProjectAudits(id) });
+  return NextResponse.json({ audits: await getProjectAudits(id) });
 }

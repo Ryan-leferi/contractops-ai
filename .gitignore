@@ -30,6 +30,19 @@ playwright-report/
 *_cover_email.md
 **/*_cover_email.md
 
+# Durable local persistence files (Milestone 3E).
+# Default file-adapter root + reserved SQLite extensions. Never commit
+# locally generated dev/demo data; it may contain synthetic project
+# state, decision history, audit logs that belong to a single developer's
+# workstation only.
+*.db
+*.sqlite
+*.sqlite3
+.contractops-data/
+**/.contractops-data/
+.tmp-e2e-data/
+**/.tmp-e2e-data/
+
 # Environment / secrets
 .env
 .env.*

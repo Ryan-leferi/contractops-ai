@@ -64,6 +64,12 @@ const FORBIDDEN_PATH_PATTERNS = [
   // Cover email Markdown export (Milestone 3B). Specifically the renderer
   // suffix — ordinary docs/README MD remain trackable.
   { name: "generated cover email Markdown", re: /_cover_email\.md$/i },
+  // Local durable persistence files (Milestone 3E). The file adapter
+  // writes JSON/JSONL under `.contractops-data/` (or any configured root)
+  // and a future SQLite adapter would write `*.db` / `*.sqlite*`.
+  { name: "local persistence data dir", re: /(^|\/)\.contractops-data(\/|$)/ },
+  { name: "Playwright durable-test scratch dir", re: /(^|\/)\.tmp-e2e-data(\/|$)/ },
+  { name: "SQLite database file", re: /\.(db|sqlite|sqlite3)$/i },
 ];
 
 const ENV_ALLOWLIST = new Set(["\\.env.example", ".env.example"]);

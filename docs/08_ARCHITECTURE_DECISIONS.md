@@ -117,3 +117,26 @@ Lightweight ADRs. Each decision derives from [PLATFORM_BRIEF.md](../PLATFORM_BRI
 - Real durability (PostgreSQL or another database) is out of scope for this milestone and explicitly forbidden by the milestone prompt. A future milestone will swap `lib/server-store.ts`'s storage layer for a real database. The Operation-descriptor boundary makes that swap a one-file change — no page or aggregate logic needs to move.
 - Real LLM providers (OpenAI, Anthropic) are now instantiated directly on the server inside `lib/server-aggregate-context.ts` via `selectProviderByName(name, env)`; the browser no longer needs the `/api/agent/*` proxy hop. The old proxy routes remain for backward compatibility but are no longer used by the StoreProvider.
 - Confidential source documents MUST NOT be POSTed into this store. Per PLATFORM_BRIEF.md §10 and the milestone prompt, only synthetic / sanitized text belongs here — the in-memory store provides no encryption or access control.
+
+---
+
+## ADR-012 — Pluggable persistence behind a `PersistenceAdapter` interface
+
+**Source:** Milestone 3E scope; ADR-011's "future milestone will swap the storage layer" commitment.
+
+**Decision:** All server-side state access (`ProjectState`, `AuditLog`, `IssueDecisionHistoryEntry`) goes through a single `PersistenceAdapter` interface (`packages/web/lib/persistence/types.ts`). Two adapters ship in 3E:
+
+1. **`MemoryPersistenceAdapter`** — the default. Same `globalThis`-pinned Map as 3D, now wrapped in the interface. CI and `npm run dev` use it without any env var.
+2. **`FilePersistenceAdapter`** — opt-in via `PERSISTENCE_DRIVER=file`. Writes per-project files under `PERSISTENCE_FILE_PATH` (default `./.contractops-data/`):
+   - `<id>.project.json` — full `ProjectState` snapshot (rewritten on save).
+   - `<id>.audits.jsonl` — one `AuditLog` per line, append-only.
+   - `<id>.history.jsonl` — one `IssueDecisionHistoryEntry` per line, append-only.
+   Append-only is enforced at the adapter: a duplicate id throws `AppendOnlyViolationError` before the disk write.
+
+**Consequence:**
+
+- Memory remains default. `PERSISTENCE_DRIVER` set to anything other than `memory` or `file` throws at boot (`UnknownPersistenceDriverError`). `sqlite` is reserved for a future adapter and currently throws — there is no silent fallback.
+- The file adapter is **local dev / demo only**. No auth, no encryption, no replication, no multi-process locking. Real production durability lands in a future milestone (PostgreSQL or similar) behind the same interface; only `lib/persistence/` adds a third file.
+- `.contractops-data/`, `.tmp-e2e-data/`, and `*.db` / `*.sqlite` / `*.sqlite3` are gitignored, and `npm run repo:hygiene` refuses to allow them to be tracked.
+- Generated `.docx` and `_cover_email.md` artifacts are never written into the persistence root — `ExportFile.content` is a text summary, not the binary.
+- Real confidential source documents MUST NOT be POSTed into either adapter. PLATFORM_BRIEF.md §10 and §12 rule 6 still apply.

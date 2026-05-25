@@ -14,7 +14,7 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function GET() {
-  return NextResponse.json({ projects: listProjectSummaries() });
+  return NextResponse.json({ projects: await listProjectSummaries() });
 }
 
 export async function POST(request: Request) {
@@ -34,6 +34,6 @@ export async function POST(request: Request) {
       { status: 400 },
     );
   }
-  const { state, audits } = createProjectInStore(name.trim());
+  const { state, audits } = await createProjectInStore(name.trim());
   return NextResponse.json({ state, audits }, { status: 201 });
 }

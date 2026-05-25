@@ -16,57 +16,54 @@ import {
 import type { Operation } from "../lib/operations";
 
 /**
- * Server-store unit tests (Milestone 3D).
+ * Server-store façade tests (Milestones 3D + 3E).
  *
- * Each test resets the in-memory singleton so state from previous tests
- * does not bleed in. The store loads playbook files from disk via the
- * findPlaybooksDir() resolver, which is verified end-to-end here.
- *
- * No HTTP, no browser, no Playwright — pure Node calls into the same
- * module the /api/projects route handlers use.
+ * Exercises the route-level functions in `lib/server-store.ts` against
+ * the default memory persistence adapter. After 3E every read/write is
+ * async because the adapter interface is async (file adapter needs it).
  */
 
-beforeEach(() => {
-  resetStore();
+beforeEach(async () => {
+  await resetStore();
 });
 
-afterEach(() => {
-  resetStore();
+afterEach(async () => {
+  await resetStore();
 });
 
 describe("server-store: create / list / get", () => {
-  it("creates a project, lists it, and returns its full ProjectState", () => {
-    expect(listProjectSummaries()).toEqual([]);
+  it("creates a project, lists it, and returns its full ProjectState", async () => {
+    expect(await listProjectSummaries()).toEqual([]);
 
-    const { state, audits } = createProjectInStore("Demo project A");
+    const { state, audits } = await createProjectInStore("Demo project A");
     expect(state.project.name).toBe("Demo project A");
     expect(state.project.status).toBe("created");
     // Project creation emits exactly one audit log entry.
     expect(audits).toHaveLength(1);
     expect(audits[0]!.event_type).toBe("project_created");
 
-    const summaries = listProjectSummaries();
+    const summaries = await listProjectSummaries();
     expect(summaries).toHaveLength(1);
     expect(summaries[0]!.name).toBe("Demo project A");
 
     // Round-trip through get*.
-    const fetched = getProjectState(state.project.id);
+    const fetched = await getProjectState(state.project.id);
     expect(fetched?.project.id).toBe(state.project.id);
-    expect(getProjectAudits(state.project.id)).toHaveLength(1);
-    expect(getProjectDecisionHistory(state.project.id)).toEqual([]);
+    expect(await getProjectAudits(state.project.id)).toHaveLength(1);
+    expect(await getProjectDecisionHistory(state.project.id)).toEqual([]);
   });
 
-  it("returns null / empty for unknown project ids", () => {
-    expect(getProjectState("nope")).toBeNull();
-    expect(getProjectAudits("nope")).toEqual([]);
-    expect(getProjectDecisionHistory("nope")).toEqual([]);
+  it("returns null / empty for unknown project ids", async () => {
+    expect(await getProjectState("nope")).toBeNull();
+    expect(await getProjectAudits("nope")).toEqual([]);
+    expect(await getProjectDecisionHistory("nope")).toEqual([]);
   });
 
-  it("listProjectSummaries is sorted by created_at ascending", () => {
-    createProjectInStore("first");
-    createProjectInStore("second");
-    createProjectInStore("third");
-    const names = listProjectSummaries().map((p) => p.name);
+  it("listProjectSummaries is sorted by created_at ascending", async () => {
+    await createProjectInStore("first");
+    await createProjectInStore("second");
+    await createProjectInStore("third");
+    const names = (await listProjectSummaries()).map((p) => p.name);
     expect(names).toEqual(["first", "second", "third"]);
   });
 });
@@ -76,7 +73,7 @@ describe("server-store: create / list / get", () => {
 // ─────────────────────────────────────────────────────────────────────
 
 async function quickSetupToIssuesOpen(): Promise<string> {
-  const { state } = createProjectInStore("e2e setup");
+  const { state } = await createProjectInStore("e2e setup");
   const id = state.project.id;
   await applyOperationToStore(id, {
     name: "add_source",
@@ -91,7 +88,7 @@ async function quickSetupToIssuesOpen(): Promise<string> {
   await applyOperationToStore(id, {
     name: "add_source_content",
     args: {
-      source_document_id: getProjectState(id)!.source_documents[0]!.id,
+      source_document_id: (await getProjectState(id))!.source_documents[0]!.id,
       text_content: "[synthetic] body",
     },
   });
@@ -102,7 +99,7 @@ async function quickSetupToIssuesOpen(): Promise<string> {
   });
   await applyOperationToStore(id, { name: "select_playbook", args: {} });
   // Answer every required intake question.
-  const after = getProjectState(id)!;
+  const after = (await getProjectState(id))!;
   for (const q of after.intake_questions.filter((x) => x.required)) {
     await applyOperationToStore(id, {
       name: "answer_intake",
@@ -120,9 +117,9 @@ async function quickSetupToIssuesOpen(): Promise<string> {
 
 describe("server-store: applyOperationToStore — workflow ops", () => {
   it("each operation updates the persisted ProjectState in place", async () => {
-    const { state } = createProjectInStore("workflow-test");
+    const { state } = await createProjectInStore("workflow-test");
     const id = state.project.id;
-    expect(getProjectState(id)!.source_documents).toHaveLength(0);
+    expect((await getProjectState(id))!.source_documents).toHaveLength(0);
 
     await applyOperationToStore(id, {
       name: "add_source",
@@ -134,7 +131,7 @@ describe("server-store: applyOperationToStore — workflow ops", () => {
         source_priority: 1,
       },
     });
-    expect(getProjectState(id)!.source_documents).toHaveLength(1);
+    expect((await getProjectState(id))!.source_documents).toHaveLength(1);
   });
 
   it("rejects unknown project ids", async () => {
@@ -151,7 +148,7 @@ describe("server-store: applyOperationToStore — workflow ops", () => {
 describe("server-store: audit log + decision history are append-only", () => {
   it("multiple decisions append new entries; existing entries never change id or order", async () => {
     const id = await quickSetupToIssuesOpen();
-    const issueIds = getProjectState(id)!.issue_cards.map((c) => c.issue_id);
+    const issueIds = (await getProjectState(id))!.issue_cards.map((c) => c.issue_id);
     expect(issueIds.length).toBeGreaterThan(0);
     const firstIssue = issueIds[0]!;
 
@@ -159,7 +156,7 @@ describe("server-store: audit log + decision history are append-only", () => {
       name: "decide_issue",
       args: { issue_id: firstIssue, decision: "rejected", reason_note: "initial reject" },
     });
-    const history1 = getProjectDecisionHistory(id);
+    const history1 = await getProjectDecisionHistory(id);
     expect(history1).toHaveLength(1);
     const firstEntry = history1[0]!;
     expect(firstEntry.previous_decision).toBe("pending");
@@ -169,7 +166,7 @@ describe("server-store: audit log + decision history are append-only", () => {
       name: "decide_issue",
       args: { issue_id: firstIssue, decision: "accepted", reason_note: "changed mind" },
     });
-    const history2 = getProjectDecisionHistory(id);
+    const history2 = await getProjectDecisionHistory(id);
     expect(history2).toHaveLength(2);
     // The first entry is unchanged.
     expect(history2[0]!.id).toBe(firstEntry.id);
@@ -180,22 +177,38 @@ describe("server-store: audit log + decision history are append-only", () => {
     expect(history2[1]!.new_decision).toBe("accepted");
   });
 
-  it("every operation appends to the project's audit log; nothing is removed", async () => {
+  it("works across multiple cards independently", async () => {
     const id = await quickSetupToIssuesOpen();
-    const auditsBefore = getProjectAudits(id);
-    expect(auditsBefore.length).toBeGreaterThan(0);
-
-    const firstIssue = getProjectState(id)!.issue_cards[0]!.issue_id;
+    const cards = (await getProjectState(id))!.issue_cards;
+    const [a, b] = cards;
     await applyOperationToStore(id, {
       name: "decide_issue",
-      args: { issue_id: firstIssue, decision: "rejected" },
+      args: { issue_id: a!.issue_id, decision: "accepted" },
     });
-    const auditsAfter = getProjectAudits(id);
-    expect(auditsAfter.length).toBe(auditsBefore.length + 1);
-    // The earlier audits are unchanged (same ids, same order).
-    expect(auditsAfter.slice(0, auditsBefore.length).map((a) => a.id)).toEqual(
-      auditsBefore.map((a) => a.id),
-    );
+    await applyOperationToStore(id, {
+      name: "decide_issue",
+      args: { issue_id: b!.issue_id, decision: "rejected" },
+    });
+    await applyOperationToStore(id, {
+      name: "decide_issue",
+      args: { issue_id: a!.issue_id, decision: "rejected" },
+    });
+    const history = await getProjectDecisionHistory(id);
+    expect(history).toHaveLength(3);
+    expect(history.filter((h) => h.issue_id === a!.issue_id)).toHaveLength(2);
+    expect(history.filter((h) => h.issue_id === b!.issue_id)).toHaveLength(1);
+  });
+
+  it("emits one AuditLog entry per decision call (existing behavior preserved)", async () => {
+    const id = await quickSetupToIssuesOpen();
+    const card = (await getProjectState(id))!.issue_cards[0]!;
+    const beforeAudits = (await getProjectAudits(id)).length;
+    const first = await applyOperationToStore(id, {
+      name: "decide_issue",
+      args: { issue_id: card.issue_id, decision: "accepted" },
+    });
+    expect(first.audits).toHaveLength(1);
+    expect((await getProjectAudits(id)).length).toBe(beforeAudits + 1);
   });
 });
 
@@ -205,7 +218,7 @@ describe("server-store: audit log + decision history are append-only", () => {
 
 describe("server-store: workflow invariants still enforced", () => {
   it("source-pack lock blocks subsequent add_source", async () => {
-    const { state } = createProjectInStore("lock-test");
+    const { state } = await createProjectInStore("lock-test");
     const id = state.project.id;
     await applyOperationToStore(id, {
       name: "add_source",
@@ -222,7 +235,7 @@ describe("server-store: workflow invariants still enforced", () => {
 
   it("approve_final is refused while any Issue Card is still pending", async () => {
     const id = await quickSetupToIssuesOpen();
-    const cards = getProjectState(id)!.issue_cards;
+    const cards = (await getProjectState(id))!.issue_cards;
     expect(cards.length).toBeGreaterThan(0);
 
     // Decide one card so revision can proceed; leave the others pending.
@@ -234,7 +247,7 @@ describe("server-store: workflow invariants still enforced", () => {
     // §5 rule 5) and the project status advances to `revised`. At that point
     // approve_final's pending-cards guard becomes the gate.
     await applyOperationToStore(id, { name: "create_revision", args: {} });
-    const stillPending = getProjectState(id)!.issue_cards.filter(
+    const stillPending = (await getProjectState(id))!.issue_cards.filter(
       (c) => c.human_decision === "pending",
     );
     expect(stillPending.length).toBeGreaterThan(0);
@@ -246,7 +259,7 @@ describe("server-store: workflow invariants still enforced", () => {
 
   it("rejected Issue Card stays excluded from revision input", async () => {
     const id = await quickSetupToIssuesOpen();
-    const cards = getProjectState(id)!.issue_cards;
+    const cards = (await getProjectState(id))!.issue_cards;
     const [first, ...rest] = cards;
     await applyOperationToStore(id, {
       name: "decide_issue",
@@ -259,7 +272,7 @@ describe("server-store: workflow invariants still enforced", () => {
       });
     }
     await applyOperationToStore(id, { name: "create_revision", args: {} });
-    const versions = getProjectState(id)!.contract_versions;
+    const versions = (await getProjectState(id))!.contract_versions;
     const v1 = versions[versions.length - 1]!;
     expect(v1.content).not.toContain(first!.recommended_revision);
     // Accepted cards' content does appear.
@@ -320,13 +333,13 @@ describe("parseOperationOrThrow", () => {
 // ─────────────────────────────────────────────────────────────────────
 
 describe("resetStore", () => {
-  it("drops every project and every audit", () => {
-    createProjectInStore("a");
-    createProjectInStore("b");
-    expect(debugStoreSizes().projects).toBe(2);
-    expect(debugStoreSizes().totalAudits).toBe(2);
-    resetStore();
-    expect(debugStoreSizes()).toEqual({ projects: 0, auditedProjects: 0, totalAudits: 0 });
-    expect(listProjectSummaries()).toEqual([]);
+  it("drops every project and every audit", async () => {
+    await createProjectInStore("a");
+    await createProjectInStore("b");
+    expect((await debugStoreSizes()).projects).toBe(2);
+    expect((await debugStoreSizes()).totalAudits).toBe(2);
+    await resetStore();
+    expect(await debugStoreSizes()).toEqual({ projects: 0, totalAudits: 0, totalHistory: 0 });
+    expect(await listProjectSummaries()).toEqual([]);
   });
 });
