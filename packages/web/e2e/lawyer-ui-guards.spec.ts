@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { waitForStoreIdle } from "./helpers";
+import { answerAllRequiredIntakeQuestions, waitForStoreIdle } from "./helpers";
 
 /**
  * Milestone 3G — UI-level lawyer-only guards.
@@ -75,15 +75,12 @@ test("Issue decision buttons disable for business_choi, re-enable for lawyer_par
   await page.click('[data-testid="select-playbook-btn"]');
 
   await page.goto(`/projects/${projectId}/intake`);
-  await expect(page.locator('[data-testid^="intake-card-"]').first()).toBeVisible();
-  const intake = page.locator('[data-testid^="intake-card-"]');
-  const total = await intake.count();
-  for (let i = 0; i < total; i++) {
-    const card = intake.nth(i);
-    await card.locator("input").fill(`a${i + 1}`);
-    await card.locator("button").click();
-  }
-  await expect(page.getByTestId("intake-progress")).toContainText("all required answered");
+  // Helper gates each save on `waitForStoreIdle` — required because the
+  // 3D StoreProvider made `applyProjectOp` async. Without per-save
+  // gating, a tight fill→click loop drops answers on slow CI runners
+  // (see helpers.ts comment + the original failure
+  // "2/4 answered · 2 required missing" on GitHub Actions).
+  await answerAllRequiredIntakeQuestions(page);
 
   await page.goto(`/projects/${projectId}/deal-memo`);
   await page.click('[data-testid="generate-deal-memo-btn"]');
@@ -232,16 +229,7 @@ test("export buttons disable for business_choi even when a final version exists"
   await page.goto(`/projects/${projectId}/playbook`);
   await page.click('[data-testid="select-playbook-btn"]');
   await page.goto(`/projects/${projectId}/intake`);
-  await expect(page.locator('[data-testid^="intake-card-"]').first()).toBeVisible();
-  const intake = page.locator('[data-testid^="intake-card-"]');
-  const total = await intake.count();
-  for (let i = 0; i < total; i++) {
-    const card = intake.nth(i);
-    await card.locator("input").fill(`a${i + 1}`);
-    await card.locator("button").click();
-    await waitForStoreIdle(page);
-  }
-  await expect(page.getByTestId("intake-progress")).toContainText("all required answered");
+  await answerAllRequiredIntakeQuestions(page);
   await page.goto(`/projects/${projectId}/deal-memo`);
   await page.click('[data-testid="generate-deal-memo-btn"]');
   await expect(page.getByTestId("deal-memo-status")).toHaveText("Drafted");
