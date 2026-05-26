@@ -4,6 +4,7 @@ import type {
   ContractVersion,
   DealMemo,
   DraftingPlan,
+  DraftIteration,
   ExportFile,
   IntakeAnswer,
   IntakeQuestion,
@@ -58,6 +59,15 @@ export interface ProjectState {
    */
   decision_history: IssueDecisionHistoryEntry[];
   /**
+   * Append-only log of Solo Drafting Loop iterations (Pilot P1). Each
+   * entry pins one cycle of the loop: base ContractVersion → reviews →
+   * synthesizer → revision → stop. Heavy data (Issue Cards, AgentRuns,
+   * ContractVersions, decision_history) stays in its existing
+   * collections; this list is a thin index/receipt for the loop UI. See
+   * ADR-022.
+   */
+  draft_iterations: DraftIteration[];
+  /**
    * Project-scoped membership list (Milestone 3L). Each entry is a
    * (actor_id, project_role) triple plus provenance + soft-delete
    * `disabled_at`. Membership is the SERVER-SIDE source of truth for
@@ -93,6 +103,7 @@ export function emptyProjectState(
     exports: [],
     qa_runs: [],
     decision_history: [],
+    draft_iterations: [],
     memberships: [],
   };
 }

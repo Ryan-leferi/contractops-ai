@@ -22,6 +22,14 @@ export const agentRoleSchema = z.enum([
   "counterparty_reviewer",
   "source_consistency_reviewer",
   "legal_style_reviewer",
+  /**
+   * Pilot P1 — review synthesizer. Consumes the three reviewer outputs +
+   * the current draft and produces a structured `RevisionSynthesisOutput`
+   * that drives the next revision_agent run. Mock-only in P1; the seam
+   * is provider-agnostic so a future Google/Gemini provider can take it
+   * over without touching aggregate or role code. See ADR-022.
+   */
+  "review_synthesizer",
   "deterministic_qa",
   "revision_agent",
   "final_qa_assistant",

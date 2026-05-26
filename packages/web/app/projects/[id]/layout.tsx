@@ -42,6 +42,13 @@ const STEPS: Step[] = [
       s.issue_cards.length > 0 && s.issue_cards.every((c) => c.human_decision !== "pending"),
   },
   { href: "/qa", label: "9. QA & Final", isDone: (s) => s.contract_versions.some((v) => v.final) },
+  {
+    href: "/draft-loop",
+    label: "Draft Loop",
+    // Mark "done" once at least one iteration has been stopped (the
+    // lawyer's explicit "ready for final review" signal).
+    isDone: (s) => (s.draft_iterations ?? []).some((it) => it.status === "stopped"),
+  },
   { href: "/exports", label: "10. Exports", isDone: (s) => s.exports.length > 0 },
   {
     href: "/members",

@@ -19,6 +19,7 @@ const PROMPT_FILES: Record<string, string> = {
   counterparty_reviewer: "counterparty_reviewer.md",
   source_consistency_reviewer: "source_consistency_reviewer.md",
   legal_style_reviewer: "legal_style_reviewer.md",
+  review_synthesizer: "review_synthesizer.md",
   revision_agent: "revision_agent.md",
   final_qa_assistant: "final_qa_assistant.md",
 };

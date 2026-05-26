@@ -63,6 +63,20 @@ export type Operation =
   | {
       name: "create_export";
       args: { export_type: S.ExportType; content: string; file_name?: string };
+    }
+  // Pilot P1 — Solo Drafting Loop operations
+  | { name: "create_draft_iteration"; args: { note?: string } }
+  | {
+      name: "synthesize_reviews";
+      args: { iteration_id: string };
+    }
+  | {
+      name: "batch_accept_review_issues";
+      args: { issue_ids: string[]; reason_note?: string };
+    }
+  | {
+      name: "stop_draft_loop";
+      args: { iteration_id: string; stop_note?: string };
     };
 
 export type OperationName = Operation["name"];
@@ -85,6 +99,10 @@ export const OPERATION_NAMES: readonly OperationName[] = [
   "create_revision",
   "approve_final",
   "create_export",
+  "create_draft_iteration",
+  "synthesize_reviews",
+  "batch_accept_review_issues",
+  "stop_draft_loop",
 ] as const;
 
 export function isKnownOperationName(name: unknown): name is OperationName {

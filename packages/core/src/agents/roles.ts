@@ -5,12 +5,14 @@ import {
   finalQAOutputSchema,
   issueCardListOutputSchema,
   revisionOutputSchema,
+  revisionSynthesisOutputSchema,
   type ContractDraftOutput,
   type DealMemoDraftOutput,
   type DraftingPlanOutput,
   type FinalQAOutput,
   type IssueCardListOutput,
   type RevisionOutput,
+  type RevisionSynthesisOutput,
 } from "@contractops/schemas";
 import type { Env } from "../env";
 import {
@@ -24,6 +26,7 @@ import {
   type DealMemoDrafterInput,
   type DraftingPlanDrafterInput,
   type FinalQAAssistantInput,
+  type ReviewSynthesizerInput,
   type ReviewerInput,
   type RevisionAgentInput,
 } from "./inputs";
@@ -221,6 +224,43 @@ export async function runRevisionAgent(
     input_id: input.previous_version.id,
     prompt,
     schema: revisionOutputSchema,
+    env,
+  });
+}
+
+/**
+ * Pilot P1 — `review_synthesizer` role agent. Consumes the pending Issue
+ * Cards from the current iteration's reviewer round + the current draft
+ * and produces a `RevisionSynthesisOutput`. Provider-agnostic: in P1 the
+ * mock provider returns a canned synthesis; in a future milestone the
+ * Google/Gemini provider plugs in via `tryReal("review_synthesizer")`.
+ *
+ * The role NEVER mutates contract content. Its output is an instruction
+ * package consumed by the next `revision_agent` run (see `aggSynthesizeReviews`
+ * + `aggCreateRevision`). Forbidden mutation is enforced by the aggregate
+ * op surface — the synthesizer never receives a writable `state` handle.
+ */
+export async function runReviewSynthesizer(
+  opts: RoleFnOpts<ReviewSynthesizerInput>,
+): Promise<AgentResult<RevisionSynthesisOutput>> {
+  const { input, provider, env } = opts;
+  const tmpl = templateFor("review_synthesizer", opts.template);
+  const prompt = renderPromptTemplate(tmpl, {
+    project_id: input.project_id,
+    iteration_number: String(input.iteration_number),
+    playbook_summary: formatPlaybookSummary(input.playbook),
+    draft: formatContractContent(input.draft),
+    pending_issue_cards: formatIssueCards(input.pending_issue_cards),
+  });
+  return runAgent({
+    provider,
+    role: "review_synthesizer",
+    project_id: input.project_id,
+    prompt_id: "review_synthesizer",
+    prompt_version: PROMPT_VERSION,
+    input_id: input.draft.id,
+    prompt,
+    schema: revisionSynthesisOutputSchema,
     env,
   });
 }

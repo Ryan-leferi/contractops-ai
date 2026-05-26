@@ -431,6 +431,15 @@ async function dispatch(
         { ...op.args, created_by: actor },
         env,
       );
+    // Pilot P1 — Solo Drafting Loop
+    case "create_draft_iteration":
+      return core.aggCreateDraftIteration(state, ctx, op.args);
+    case "synthesize_reviews":
+      return core.aggSynthesizeReviews(state, op.args, ctx);
+    case "batch_accept_review_issues":
+      return core.aggBatchAcceptReviewIssues(state, actor, op.args, env);
+    case "stop_draft_loop":
+      return core.aggStopDraftLoop(state, actor, op.args, env);
   }
 }
 

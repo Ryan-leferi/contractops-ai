@@ -23,6 +23,8 @@ OAuth/SSO, external sending (email/e-signature), PDF conversion, real document i
 
 [TASKS.md](TASKS.md) records the original mock-MVP milestone plan (Milestones 0–5). The Alpha v0.1 real-LLM extension (2A–4C) is tracked in commit history + ADRs.
 
+**Post-alpha Pilot P1 — Solo Drafting Loop** (delivered 2026-05-26) tightens the existing multi-agent surface into a single in-house lawyer's iterative drafting workflow. New page `/projects/[id]/draft-loop` + one new role (`review_synthesizer`) + one new state record (`DraftIteration`). No new providers, no new exports, no enterprise scope. See the “Solo Drafting Loop” section below and [ADR-022](docs/08_ARCHITECTURE_DECISIONS.md#adr-022).
+
 ## Single source of truth
 
 [PLATFORM_BRIEF.md](PLATFORM_BRIEF.md) is the authoritative product specification. All other documents derive from it. If a derived document contradicts the brief, the brief wins.
@@ -725,6 +727,90 @@ Pinned invariants enforced by the runner (in addition to the unit + acceptance s
 - Lawyer-only ops (approvals, final approve, decide issue, classify) refuse non-lawyer actors.
 
 See [docs/09_ALPHA_READINESS_CHECKLIST.md](docs/09_ALPHA_READINESS_CHECKLIST.md) for the area-by-area readiness review and [docs/10_ALPHA_EVALUATION_REPORT.md](docs/10_ALPHA_EVALUATION_REPORT.md) for the most recent run's results + go/no-go recommendation.
+
+## Solo Drafting Loop (post-alpha Pilot P1)
+
+> Practical solo-lawyer workflow. The full enterprise scaffolding (3D–3L,
+> 4A–4C) stays in place; this is a focused, opinionated wrapper on top.
+
+### What it is
+
+A single in-house lawyer drives one project from raw source material
+(business request emails, reference contracts, term sheets) to a
+high-quality draft via repeated cycles of:
+
+```
+[GPT contract_drafter]
+       ↓
+[Claude counterparty_reviewer] [OpenAI source_consistency_reviewer] [OpenAI legal_style_reviewer]
+       ↓                                ↓                                  ↓
+             [review_synthesizer] (Gemini-target, mock-only in P1)
+       ↓
+[GPT revision_agent]   →   next iteration
+       ↓
+[lawyer stops loop]   →   QA & Final → Exports
+```
+
+Every step requires a user click — there is NO autonomous loop. Default
+guidance suggests 3 iterations; no hard product limit.
+
+### Role map
+
+| Step | Role (model class) | Provider seam | Default mode |
+|---|---|---|---|
+| Initial draft (v0) | `contract_drafter` | OpenAI | mock |
+| Counterparty review | `counterparty_reviewer` | Anthropic (Claude) | mock |
+| Source-consistency review | `source_consistency_reviewer` | OpenAI (Gemini reserved post-P1) | mock |
+| Legal-style review | `legal_style_reviewer` | OpenAI | mock |
+| Review synthesis (NEW) | `review_synthesizer` | provider-agnostic seam; Gemini is the post-P1 target | mock (P1) |
+| Revision | `revision_agent` | OpenAI | mock |
+| Human accept/reject | `human_lawyer` (no model) | n/a | always real (lawyer is in the loop) |
+
+Real-mode opt-in for any of the LLM roles is unchanged — same gates from
+Milestones 4A/4B (`USE_REAL_LLM=true` + `LLM_PROVIDER_ALLOWLIST` +
+`REAL_LLM_ROLE_ALLOWLIST` + API key). `review_synthesizer` stays mock in
+P1 by design: adding a Google/Gemini provider is the next focused task.
+The seam is already provider-agnostic — wiring Gemini is a one-line
+addition to `tryReal()` once the provider lands.
+
+### Page + operations
+
+- New UI page: **`/projects/[id]/draft-loop`** ("Draft Loop" in the sidebar).
+- New state record: `DraftIteration` (in `ProjectState.draft_iterations`).
+- New aggregate operations:
+  - `create_draft_iteration` — open a new cycle
+  - `synthesize_reviews` — run the synthesizer against the iteration's pending Issue Cards
+  - `batch_accept_review_issues` — convenience: lawyer accepts all non-critical pending cards in one click (critical cards must be decided individually on the Issues page; per-card decision_history entries + audit logs are still appended)
+  - `stop_draft_loop` — mark "ready for final review" (does NOT auto-approve final)
+- New permissions: `run_draft_loop` + `batch_accept_issues` (both lawyer-only; business roles cannot drive the loop).
+
+### Source input
+
+The loop treats `SourceDocumentContent` rows as the lawyer's intake:
+business request emails, reference materials, prior contracts, term
+sheets, and internal instructions. There is **no file parsing, no PDF
+conversion, no OCR** — paste synthetic text on the Sources page first.
+The loop page shows a warning if `source_contents` is empty.
+
+### Mock vs real mode
+
+- Mock mode is the default and is mandatory — every loop step works
+  end-to-end against mock providers (covered by
+  `packages/web/e2e/draft-loop.spec.ts`).
+- Real mode reuses Milestone 4A/4B gates. `review_synthesizer` is
+  mock-only in P1; adding Gemini is the next focused task.
+- **Do not paste real confidential documents** until production
+  security controls (auth, RBAC, retention, redaction) are approved.
+
+### What the loop does NOT do
+
+- It does NOT auto-approve final or auto-export.
+- It does NOT bypass Issue Cards (synthesis is a recommendation layer; the
+  lawyer's decisions remain authoritative).
+- It does NOT apply rejected or deferred Issue Cards (rejected card text
+  is invariant-excluded from the next revision — same guard as 4A).
+- It does NOT replace any existing page — Sources / Playbook / Intake /
+  Deal Memo / Drafting Plan / Issues / QA / Exports are unchanged.
 
 ## Security and production limitations (Alpha v0.1)
 

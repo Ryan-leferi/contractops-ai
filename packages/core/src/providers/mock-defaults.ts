@@ -27,6 +27,19 @@ export const DEFAULT_MOCK_JSON_RESPONSES: Record<string, unknown> = {
   counterparty_reviewer: { findings: [] },
   source_consistency_reviewer: { findings: [] },
   legal_style_reviewer: { findings: [] },
+  // Pilot P1 — minimum-valid synthesis shape. Per-state overrides
+  // produced by `buildPlaybookCannedResponses` (web) preserve the
+  // actual pending Issue Card ids; this default is only used when no
+  // override matches.
+  review_synthesizer: {
+    summary: "[MOCK review synthesis — placeholder]",
+    priority_ordered_issues: [],
+    merged_revision_instructions: [],
+    conflicts_between_reviewers: [],
+    instructions_for_gpt_revision: "[MOCK revision instructions — placeholder]",
+    excluded_or_low_confidence_items: [],
+    source_issue_card_ids: [],
+  },
   revision_agent: {
     content: "[MOCK revised contract body — placeholder]",
     applied_issue_card_ids: [],
