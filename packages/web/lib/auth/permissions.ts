@@ -56,7 +56,10 @@ export type Permission =
   // ── Final approval + export ─────────────────────────────────
   | "approve_final"           // approve_final (owner only)
   | "export_clean"            // clean_docx + cover_email (any member)
-  | "export_internal";        // commentary_docx + negotiation_matrix (lawyers only)
+  | "export_internal"         // commentary_docx + negotiation_matrix (lawyers only)
+  // ── Pilot P1 — Solo Drafting Loop ───────────────────────────
+  | "run_draft_loop"          // create_draft_iteration / synthesize_reviews / stop_draft_loop
+  | "batch_accept_issues";    // batch_accept_review_issues (lawyer-only, audited per card)
 
 /**
  * The matrix. Each role maps to the EXHAUSTIVE set of permissions it
@@ -98,6 +101,8 @@ export const PROJECT_ROLE_MATRIX: Record<ProjectRole, ReadonlySet<Permission>> =
     "approve_final",
     "export_clean",
     "export_internal",
+    "run_draft_loop",
+    "batch_accept_issues",
   ]),
   reviewer_lawyer: new Set<Permission>([
     "view_project",
@@ -118,6 +123,8 @@ export const PROJECT_ROLE_MATRIX: Record<ProjectRole, ReadonlySet<Permission>> =
     "run_qa",
     "export_clean",
     "export_internal",
+    "run_draft_loop",
+    "batch_accept_issues",
   ]),
   business_contributor: new Set<Permission>([
     "view_project",
@@ -191,6 +198,12 @@ export function mapOperationToPermission(op: Operation): Permission | null {
       const exportType = (op.args as { export_type?: string }).export_type;
       return mapExportTypeToPermission(exportType);
     }
+    case "create_draft_iteration":
+    case "synthesize_reviews":
+    case "stop_draft_loop":
+      return "run_draft_loop";
+    case "batch_accept_review_issues":
+      return "batch_accept_issues";
     default: {
       // Exhaustiveness sentinel — fails the build if OperationName
       // grows a new variant that wasn't added here.

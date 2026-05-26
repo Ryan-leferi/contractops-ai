@@ -28,6 +28,47 @@ Derived from [PLATFORM_BRIEF.md](../PLATFORM_BRIEF.md) §7. Each model is used f
 - schedule / fee / table consistency;
 - long source document synthesis.
 
+> **Post-alpha Pilot P1 update.** Gemini is the intended backend for the
+> new `review_synthesizer` role (Solo Drafting Loop) but is NOT
+> implemented in P1. The synthesizer role + seam are wired with mock
+> provider only; a future Google/Gemini provider plugs in via
+> `selectProviderByName("google", ...)` + a one-line `tryReal()` branch
+> without touching aggregate or role code. See ADR-022.
+
+## review_synthesizer (NEW — Pilot P1)
+
+Pilot P1 — Solo Drafting Loop only. Consumes the three reviewer outputs
+(`counterparty_reviewer`, `source_consistency_reviewer`,
+`legal_style_reviewer`) + the current draft and produces a structured
+`RevisionSynthesisOutput`:
+
+- groups duplicate findings across reviewers (one Issue Card group per
+  underlying problem, with the worst severity preserved);
+- triages by severity, top-down;
+- flags reviewer conflicts (e.g., "delete" vs "rewrite") + recommends
+  a resolution;
+- drops low-confidence items or items contradicted by Playbook
+  `mandatory_clauses`;
+- emits a clause-scoped imperative instruction package
+  (`instructions_for_gpt_revision`) that the next `revision_agent` run
+  embeds verbatim;
+- preserves EVERY source `issue_card_id` in `source_issue_card_ids`
+  (provenance — `aggSynthesizeReviews` refuses to persist a synthesis
+  that dropped any pending id).
+
+Hard rules:
+
+- The synthesizer NEVER mutates contract content. It only produces an
+  instruction package + an AgentRun.
+- The synthesizer NEVER decides Issue Cards (the lawyer's decisions
+  remain authoritative).
+- The synthesizer NEVER bypasses Issue Cards (rejected/deferred cards
+  are still invariant-excluded from the next revision).
+
+Mock-only in P1. The role agent + AgentRun fields + provider seam are
+identical to the other LLM roles, so wiring a real Gemini provider in a
+later pilot is a one-line addition to `tryReal()`.
+
 ## Python QA (deterministic, NOT LLM)
 
 Implemented as the **Deterministic QA engine** (Milestone 2D) under

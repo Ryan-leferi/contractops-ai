@@ -18,6 +18,11 @@ export const auditEventTypeSchema = z.enum([
   // Milestone 3L — project membership changes
   "membership_created",
   "membership_disabled",
+  // Pilot P1 — Solo Drafting Loop events
+  "draft_iteration_created",
+  "draft_iteration_synthesized",
+  "draft_iteration_stopped",
+  "review_issues_batch_accepted",
 ]);
 export type AuditEventType = z.infer<typeof auditEventTypeSchema>;
 

@@ -155,6 +155,26 @@ export function actCreateExport(args: {
   return { name: "create_export", args };
 }
 
+// ── Pilot P1 — Solo Drafting Loop ─────────────────────────────────────
+export function actCreateDraftIteration(args: { note?: string } = {}): Operation {
+  return { name: "create_draft_iteration", args };
+}
+export function actSynthesizeReviews(args: { iteration_id: string }): Operation {
+  return { name: "synthesize_reviews", args };
+}
+export function actBatchAcceptReviewIssues(args: {
+  issue_ids: string[];
+  reason_note?: string;
+}): Operation {
+  return { name: "batch_accept_review_issues", args };
+}
+export function actStopDraftLoop(args: {
+  iteration_id: string;
+  stop_note?: string;
+}): Operation {
+  return { name: "stop_draft_loop", args };
+}
+
 // ───────────────────────────────────────────────────────────────────────
 // Playbook-driven canned mock responses (used by the server-side
 // AggregateContext builder in `lib/server-aggregate-context.ts`).
@@ -272,6 +292,37 @@ export function buildPlaybookCannedResponses(
     responses[rid("final_qa_assistant", latest.id)] = {
       findings: [],
       passes: playbook.final_qa_checklist,
+    };
+
+    // Pilot P1 — Solo Drafting Loop synthesizer. Synthesis runs against
+    // the PENDING Issue Cards at synthesis time. Because the canned
+    // responder is keyed by (prompt_id::draft_id) — not by the precise
+    // card-id set — we generate the response from whatever pending
+    // cards exist in the state snapshot AT BUILD TIME. The aggregate op
+    // validates that every pending id appears in source_issue_card_ids,
+    // so this must reflect the current pending set faithfully.
+    const pendingCards = state.issue_cards.filter(
+      (c) => c.human_decision === "pending",
+    );
+    responses[rid("review_synthesizer", latest.id)] = {
+      summary:
+        pendingCards.length === 0
+          ? "No pending review findings — nothing to synthesize for this iteration."
+          : `Synthesizer (mock) grouped ${pendingCards.length} pending Issue Cards across the three reviewer roles.`,
+      priority_ordered_issues: pendingCards.slice(0, 6).map((c) => ({
+        title: c.problem.slice(0, 60),
+        severity: c.severity,
+        source_issue_card_ids: [c.issue_id],
+        merged_revision_instruction: c.recommended_revision,
+      })),
+      merged_revision_instructions: pendingCards.slice(0, 6).map((c) => c.recommended_revision),
+      conflicts_between_reviewers: [],
+      instructions_for_gpt_revision:
+        pendingCards.length === 0
+          ? "No revisions required for this iteration."
+          : "Apply the prioritized revisions above in order. Preserve existing accepted-card edits. Do not introduce changes outside the listed clauses.",
+      excluded_or_low_confidence_items: [],
+      source_issue_card_ids: pendingCards.map((c) => c.issue_id),
     };
   }
 

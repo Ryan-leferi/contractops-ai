@@ -77,3 +77,80 @@ export const finalQAOutputSchema = z.object({
   passes: z.array(z.string()).optional(),
 });
 export type FinalQAOutput = z.infer<typeof finalQAOutputSchema>;
+
+// ─────────────────────────────────────────────────────────────────────
+// Pilot P1 — review_synthesizer output
+// ─────────────────────────────────────────────────────────────────────
+
+/**
+ * One prioritized synthesis bucket. Groups Issue Cards across reviewers
+ * that point at the same underlying problem so the revision agent
+ * doesn't double-apply or contradict itself.
+ */
+export const revisionSynthesisGroupSchema = z.object({
+  /** Short title for the grouped finding (e.g. "Auto-renewal silent acceptance"). */
+  title: z.string().min(1),
+  /**
+   * Highest severity among the cards in this group. The synthesis must
+   * preserve the worst-case severity so the lawyer can triage by it.
+   */
+  severity: issueSeveritySchema,
+  /** Issue Card ids that fed this group (provenance — never dropped). */
+  source_issue_card_ids: z.array(z.string().min(1)),
+  /** Explicit, model-agnostic revision instruction the revision_agent must apply. */
+  merged_revision_instruction: z.string().min(1),
+});
+export type RevisionSynthesisGroup = z.infer<typeof revisionSynthesisGroupSchema>;
+
+/**
+ * Synthesizer's output schema. The `priority_ordered_issues` list IS the
+ * revision_agent's working memory: groups are applied top-down. Conflicts
+ * + excluded items are recorded so the lawyer can audit why a finding
+ * did NOT make it into the next revision.
+ *
+ * NOTE: the synthesizer never directly mutates contract content. It
+ * produces this package and an AgentRun; the next revision_agent run
+ * consumes both, plus the Playbook + draft + accepted Issue Cards.
+ */
+export const revisionSynthesisOutputSchema = z.object({
+  summary: z.string().min(1),
+  priority_ordered_issues: z.array(revisionSynthesisGroupSchema),
+  /** Free-text human-readable list of merged instructions, deduplicated. */
+  merged_revision_instructions: z.array(z.string().min(1)),
+  /**
+   * Where two reviewers disagreed (e.g. counterparty says "delete clause",
+   * legal-style says "rewrite for clarity"). Each entry names the source
+   * cards + a recommended resolution.
+   */
+  conflicts_between_reviewers: z.array(
+    z.object({
+      description: z.string().min(1),
+      source_issue_card_ids: z.array(z.string().min(1)),
+      resolution_recommendation: z.string().min(1),
+    }),
+  ),
+  /**
+   * The concrete instruction package to pass to revision_agent for the
+   * NEXT iteration's contract draft. Plain Korean/English imperative
+   * prose — the revision prompt embeds it verbatim.
+   */
+  instructions_for_gpt_revision: z.string().min(1),
+  /**
+   * Items the synthesizer dropped (low confidence, duplicate, contradicted
+   * by Playbook). Each carries the source Issue Card ids so the lawyer
+   * can override.
+   */
+  excluded_or_low_confidence_items: z.array(
+    z.object({
+      reason: z.string().min(1),
+      source_issue_card_ids: z.array(z.string().min(1)),
+    }),
+  ),
+  /**
+   * Flat list of every Issue Card id the synthesizer saw, regardless of
+   * how it categorized it. Used to assert provenance — `aggSynthesizeReviews`
+   * checks that every pending Issue Card id is accounted for.
+   */
+  source_issue_card_ids: z.array(z.string().min(1)),
+});
+export type RevisionSynthesisOutput = z.infer<typeof revisionSynthesisOutputSchema>;

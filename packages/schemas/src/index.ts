@@ -14,6 +14,7 @@ export * from "./issue-card";
 export * from "./issue-decision-history";
 export * from "./agent-run";
 export * from "./agent-outputs";
+export * from "./draft-iteration";
 export * from "./human-decision";
 export * from "./export";
 export * from "./audit-log";

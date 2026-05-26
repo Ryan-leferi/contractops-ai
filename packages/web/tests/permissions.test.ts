@@ -46,6 +46,9 @@ const ALL_PERMISSIONS: Permission[] = [
   "approve_final",
   "export_clean",
   "export_internal",
+  // Pilot P1 — Solo Drafting Loop
+  "run_draft_loop",
+  "batch_accept_issues",
 ];
 
 describe("PROJECT_ROLE_MATRIX — owner_lawyer holds EVERY permission", () => {
@@ -156,6 +159,21 @@ describe("Matrix invariants", () => {
       expect(can(role, "export_clean")).toBe(true);
     }
   });
+
+  // ── Pilot P1 — Solo Drafting Loop ─────────────────────────────────
+  it("run_draft_loop is lawyer-only (owner or reviewer)", () => {
+    expect(can("owner_lawyer", "run_draft_loop")).toBe(true);
+    expect(can("reviewer_lawyer", "run_draft_loop")).toBe(true);
+    expect(can("business_contributor", "run_draft_loop")).toBe(false);
+    expect(can("business_viewer", "run_draft_loop")).toBe(false);
+  });
+
+  it("batch_accept_issues is lawyer-only (owner or reviewer)", () => {
+    expect(can("owner_lawyer", "batch_accept_issues")).toBe(true);
+    expect(can("reviewer_lawyer", "batch_accept_issues")).toBe(true);
+    expect(can("business_contributor", "batch_accept_issues")).toBe(false);
+    expect(can("business_viewer", "batch_accept_issues")).toBe(false);
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────
@@ -181,6 +199,11 @@ describe("mapOperationToPermission", () => {
       run_mock_final_qa: "run_qa",
       create_revision: "create_revision",
       approve_final: "approve_final",
+      // Pilot P1 — Solo Drafting Loop
+      create_draft_iteration: "run_draft_loop",
+      synthesize_reviews: "run_draft_loop",
+      stop_draft_loop: "run_draft_loop",
+      batch_accept_review_issues: "batch_accept_issues",
     };
     for (const [name, expected] of Object.entries(mapping)) {
       const op = { name, args: {} } as unknown as Operation;

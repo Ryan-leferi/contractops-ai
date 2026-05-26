@@ -591,3 +591,164 @@ Test infrastructure:
 - **Issue-Card-decision invariants from 3C unchanged.** Real-mode reviewer findings still seed pending Issue Cards; the human lawyer still has to decide each one before revision can run.
 - **NOT production-ready for confidential documents.** Same caveat as 4A — synthetic data only until production security controls (auth + RBAC ✓, retention ✗, redaction ✗, audit forwarding to SIEM ✗, on-disk encryption beyond DB defaults ✗) ship.
 - **Forward path is 4C.** Alpha Freeze & Evaluation: pin envs, lock the verify gate, document the limitations explicitly. No further real-LLM roles are wired in the Alpha v0.1 roadmap.
+
+## ADR-022 — Post-alpha Pilot P1: Solo Drafting Loop (single-lawyer iterative workflow on top of the frozen Alpha v0.1 surface)
+
+**Source:** Post-alpha user direction (2026-05-26) reframing the immediate product goal: the practical workflow is one in-house lawyer iteratively drafting one contract using GPT for the body, Claude/OpenAI for reviews, a Gemini-class synthesizer for triage, and the lawyer for every decision. The existing Alpha v0.1 surface stays; the pilot is a focused wrapper.
+
+**Decision:** Implement the Solo Drafting Loop as a thin wrapper on top of the existing aggregate / RBAC / Issue Card / AgentRun / export scaffolding. **No new product features outside the loop.** Reuse:
+
+- Source Pack + Playbook + Deal Memo + Drafting Plan + intake (unchanged)
+- `contract_drafter` (4A) for the initial GPT draft
+- `counterparty_reviewer` (Anthropic, 4B), `source_consistency_reviewer` (OpenAI, 4B), `legal_style_reviewer` (OpenAI, 4B) for the three review perspectives
+- `revision_agent` (4A) for the GPT revision step
+- Issue Card decisions + `decision_history` (3C) for the lawyer's authoritative judgment
+- `clean_docx` / `commentary_docx` / `negotiation_matrix` / `cover_email` exports (3A/3B) unchanged
+
+**Net new surface:**
+
+1. **`review_synthesizer`** role (added to `agentRoleSchema`).
+   Consumes the three reviewer outputs + the current draft, produces a
+   structured `RevisionSynthesisOutput` (groups, priority order,
+   reviewer conflicts, exclusions, an `instructions_for_gpt_revision`
+   string consumed verbatim by the next `revision_agent` run). The role
+   is provider-agnostic; in P1 it is **mock-only** (`tryReal()` has no
+   branch for it). Wiring a real Google/Gemini provider in a later
+   pilot is a one-line `tryReal()` addition once the provider lands.
+2. **`DraftIteration`** record (in `ProjectState.draft_iterations`,
+   append-only). Thin index per loop cycle: id, iteration number,
+   base/resulting ContractVersion ids, review_issue_card_ids snapshot,
+   synthesis AgentRun id, synthesis_output cache, status (`planned` /
+   `drafted` / `reviewed` / `synthesized` / `revised` / `stopped`),
+   provider_summary. Heavy data stays in its existing collections.
+3. **Four aggregate ops:** `aggCreateDraftIteration`,
+   `aggSynthesizeReviews`, `aggBatchAcceptReviewIssues`, `aggStopDraftLoop`.
+   All four are lawyer-only (enforced inside core via `assertLawyer`).
+   `aggSynthesizeReviews` includes a provenance guard — if the
+   synthesizer's `source_issue_card_ids` drops any pending Issue Card
+   id, the op throws rather than persist a synthesis with lost
+   traceability.
+4. **`/projects/[id]/draft-loop`** UI page + "Draft Loop" sidebar entry.
+   One-page guided loop with explicit-click controls for each step
+   (no autonomous loop). Comparison panel lists past iterations.
+5. **Two new permissions** in the 3L matrix:
+   - `run_draft_loop` (gates the three iteration ops) — owner_lawyer +
+     reviewer_lawyer.
+   - `batch_accept_issues` (gates the convenience batch action) —
+     owner_lawyer + reviewer_lawyer.
+   Business roles are excluded from both.
+
+**Why a single page, not deeper integration?** The existing per-stage
+pages (Sources / Playbook / Intake / Deal Memo / Drafting Plan /
+Issues / QA / Exports) remain the authority for their respective
+artifacts. The Draft Loop page is an orchestration surface — it does
+not duplicate any control; it dispatches to existing aggregate ops
+through new "iteration receipts" (`DraftIteration`) so the lawyer can
+see what happened in each cycle. Replacing the per-stage pages would
+discard the multi-actor scaffolding and is explicitly out of scope.
+
+**Why `batch_accept_review_issues` is a separate permission (not
+piggybacking on `decide_issue`)?** Project roles match today (both
+permissions hold for owner + reviewer; both deny for business roles),
+but the dedicated permission makes the matrix self-documenting and lets
+a future "lawyer who reviews individually but cannot batch" role emerge
+without re-plumbing.
+
+**Why CRITICAL Issue Cards are refused by batch accept?** The brief's
+"Accept all review suggestions for this iteration" convenience must not
+become a click-away rubber stamp on the most dangerous findings.
+Critical cards must be decided individually on the existing Issues
+page; the batch action throws if any critical card is in the supplied
+id list (whole-batch refusal — does not silently skip). Per-card
+`decision_history` entries + audit logs are still appended for every
+accepted card so the audit trail is identical to one-at-a-time
+decisions.
+
+**Why the provenance guard on synthesis?** LLMs sometimes silently drop
+items when asked to summarize. If the synthesizer dropped a pending
+Issue Card id from `source_issue_card_ids`, the audit chain
+(`draft_iteration_synthesized` → `synthesis_agent_run_id` → synthesized
+output → which Issue Cards were considered) would be broken. The op
+refuses to persist a synthesis that loses any pending id; the lawyer
+can re-run with a different provider/prompt or fall through to
+individual decisions.
+
+**Why `review_synthesizer` is mock-only in P1?** Two reasons. (1) The
+Gemini SDK + provider would be a meaningful addition (new isolation
+row in the no-SDK test, new env vars, new `selectProviderByName`
+branch, new gated E2E) — out of scope for P1's one-page focus.
+(2) The mock synthesizer (driven by `buildPlaybookCannedResponses`)
+already exercises the full state-machine + provenance guard + AgentRun
+provenance + iteration record update, so the wiring is proven before a
+real provider lands. Real Gemini synthesis is documented as the next
+focused task (post-P1).
+
+Implementation surface:
+
+- `packages/schemas/src/agent-run.ts` — `"review_synthesizer"` added to
+  `agentRoleSchema`.
+- `packages/schemas/src/draft-iteration.ts` (NEW) — `DraftIteration`
+  + `DraftIterationProviderSummary` + status enum.
+- `packages/schemas/src/agent-outputs.ts` —
+  `revisionSynthesisOutputSchema` + `revisionSynthesisGroupSchema`.
+- `packages/schemas/src/audit-log.ts` — 4 new event types:
+  `draft_iteration_created`, `draft_iteration_synthesized`,
+  `draft_iteration_stopped`, `review_issues_batch_accepted`.
+- `packages/core/src/state.ts` — `ProjectState.draft_iterations: DraftIteration[]`
+  + `emptyProjectState` default `[]`.
+- `packages/core/src/agents/inputs.ts` — `ReviewSynthesizerInput`.
+- `packages/core/src/agents/roles.ts` — `runReviewSynthesizer`.
+- `packages/core/src/aggregate.ts` — four new aggregate ops.
+- `packages/core/src/prompts.ts` — `review_synthesizer` entry in
+  `PROMPT_FILES`.
+- `packages/core/src/providers/mock-defaults.ts` — minimum-valid
+  synthesizer response (per-state overrides in the web layer).
+- `prompts/review_synthesizer.md` (NEW) — Korean+English imperative
+  template producing the structured output schema.
+- `packages/web/lib/operations.ts` — 4 operation variants +
+  OPERATION_NAMES entries.
+- `packages/web/lib/server-store.ts` — 4 dispatch cases.
+- `packages/web/lib/auth/permissions.ts` — `run_draft_loop` +
+  `batch_accept_issues` permissions + matrix entries + op→permission
+  mapping cases.
+- `packages/web/lib/actions.ts` — 4 `act*` helpers + per-state
+  synthesizer canned mock that names every pending Issue Card id.
+- `packages/web/app/projects/[id]/draft-loop/page.tsx` (NEW) — the
+  guided loop page.
+- `packages/web/app/projects/[id]/layout.tsx` — "Draft Loop" sidebar
+  entry.
+
+Tests:
+
+- `packages/core/tests/draft-loop.test.ts` (NEW) — 19 cases covering
+  all four aggregate ops, the provenance guard, the rejected-cards
+  invariant, RBAC, and the mock-only routing for synthesizer.
+- `packages/web/tests/draft-loop-routing.test.ts` (NEW) — 3 cases
+  asserting `review_synthesizer` stays mock even when every other role
+  is opted in to real.
+- `packages/web/tests/permissions.test.ts` — extended with the two
+  new permissions in the matrix + the new op→permission mappings.
+- `packages/web/e2e/draft-loop.spec.ts` (NEW) — mock-mode end-to-end
+  spec that walks the entire loop on /draft-loop and downloads a clean
+  DOCX at the end.
+
+**Consequence:**
+
+- **Mock remains the default. No new external API call in CI.**
+  The synthesizer is mock-only. CI verify gate continues to make zero
+  network calls.
+- **All existing tests still pass.** 612 vitest tests + every
+  Playwright spec including the gated ones (still skipped by default).
+- **The frozen Alpha v0.1 surface is preserved.** No existing aggregate
+  op, role, permission, page, or export was modified beyond additive
+  enum entries / dispatcher cases that are necessary for the new ops
+  to exist.
+- **No new provider.** No SDK isolation regression. No new env var.
+- **No external sending, no e-signature, no PDF conversion, no
+  SharePoint, no n8n, no LangGraph, no OAuth/SSO.** Per user
+  constraint.
+- **Real confidential documents must NOT be used in P1.** Same caveat
+  as 4A/4B/4C — synthetic data only.
+- **Forward path is real Gemini synthesis** (Solo Drafting Loop P1.5).
+  No other roadmap. No enterprise expansion. Bug / security / invariant
+  / documentation fixes remain the only sanctioned ongoing work.

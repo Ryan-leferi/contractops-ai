@@ -9,8 +9,11 @@
 import type {
   Actor,
   AuditLog,
+  DraftIteration,
+  DraftIterationProviderSummary,
   ExportType,
   Playbook,
+  RevisionSynthesisOutput,
   SourceType,
 } from "@contractops/schemas";
 
@@ -49,6 +52,7 @@ import {
   runDraftingPlanDrafter,
   runFinalQAAssistant,
   runLegalStyleReviewer,
+  runReviewSynthesizer,
   runRevisionAgent,
   runSourceConsistencyReviewer,
 } from "./agents/roles";
@@ -919,4 +923,396 @@ export function aggCreateExport(
     audits: [res.audit],
   };
 }
+
+// ════════════════════════════════════════════════════════════════════
+// Pilot P1 — Solo Drafting Loop aggregate ops
+// ════════════════════════════════════════════════════════════════════
+//
+// Each op is a thin wrapper around existing aggregate machinery:
+//
+//   aggCreateDraftIteration    — append a `DraftIteration` receipt to
+//                                state.draft_iterations. No agent call.
+//                                Lawyer-only.
+//   aggSynthesizeReviews       — run the `review_synthesizer` role
+//                                against the iteration's pending
+//                                Issue Cards + current draft; store the
+//                                resulting AgentRun + synthesis output
+//                                on the iteration. Lawyer-only.
+//   aggBatchAcceptReviewIssues — convenience for the solo lawyer:
+//                                accept a chosen subset of pending
+//                                Issue Cards in one click. Refuses to
+//                                touch CRITICAL cards (they must be
+//                                decided one at a time). Lawyer-only;
+//                                routes through `decideIssueCard` per
+//                                card so decision_history + audit
+//                                entries are preserved per card.
+//   aggStopDraftLoop           — mark the latest iteration `stopped` so
+//                                the loop UI shows "ready for final
+//                                review". Pure state transition; no
+//                                effect on contract_versions. Lawyer-only.
+//
+// No new ContractVersion is ever created by these ops. The existing
+// `aggCreateV0` / `aggCreateRevision` pipeline is reused by the
+// loop UI; these ops only add structure ON TOP, not parallel to.
+//
+// See ADR-022.
+
+function emptyDraftIterations(state: ProjectState): DraftIteration[] {
+  return state.draft_iterations ?? [];
+}
+
+function nextIterationNumber(state: ProjectState): number {
+  const iters = emptyDraftIterations(state);
+  if (iters.length === 0) return 1;
+  return Math.max(...iters.map((it) => it.iteration_number)) + 1;
+}
+
+function assertLawyer(actor: Actor, op: string): void {
+  if (actor.role !== "human_lawyer") {
+    throw new Error(`${op} requires human_lawyer actor (got ${actor.role})`);
+  }
+}
+
+// ---------- 1. Create draft iteration ----------
+
+export interface AggCreateDraftIterationInput {
+  /** Optional short note from the lawyer at open time. Currently unused
+   * by the schema; reserved for future "why am I starting this round" UX. */
+  note?: string;
+}
+
+/**
+ * Open a new loop iteration. Pins the current latest `ContractVersion`
+ * (if any) as the base. Lawyer-only.
+ */
+export function aggCreateDraftIteration(
+  state: ProjectState,
+  ctx: AggregateContext,
+  _input: AggCreateDraftIterationInput = {},
+): AggregateResult {
+  assertLawyer(ctx.actor, "aggCreateDraftIteration");
+  const iterationNumber = nextIterationNumber(state);
+  const latest = state.contract_versions[state.contract_versions.length - 1];
+  const iteration: DraftIteration = {
+    id: ctx.env.newId(),
+    project_id: state.project.id,
+    iteration_number: iterationNumber,
+    base_contract_version_id: latest ? latest.id : null,
+    resulting_contract_version_id: null,
+    review_issue_card_ids: [],
+    synthesis_agent_run_id: null,
+    synthesis_output: null,
+    status: latest ? "drafted" : "planned",
+    created_at: ctx.env.now(),
+    created_by: ctx.actor.id,
+    stopped_at: null,
+    stop_note: null,
+    provider_summary: null,
+  };
+  const audit = createAuditLog({
+    project_id: state.project.id,
+    actor: ctx.actor,
+    event_type: "draft_iteration_created",
+    ref_id: iteration.id,
+    payload: {
+      iteration_number: iteration.iteration_number,
+      base_contract_version_id: iteration.base_contract_version_id,
+      status: iteration.status,
+    },
+    env: ctx.env,
+  });
+  return {
+    state: {
+      ...state,
+      draft_iterations: [...emptyDraftIterations(state), iteration],
+    },
+    audits: [audit],
+  };
+}
+
+// ---------- 2. Synthesize reviews ----------
+
+export interface AggSynthesizeReviewsInput {
+  iteration_id: string;
+}
+
+/**
+ * Run the `review_synthesizer` role against the iteration's pending
+ * Issue Cards + current draft. The agent call goes through whatever
+ * provider `ctx.getProvider("review_synthesizer")` returns — in P1 the
+ * mock provider; a future Gemini provider plugs in via the same seam.
+ *
+ * Side effects:
+ *   - appends an `AgentRun` row;
+ *   - updates the iteration record with `synthesis_output` +
+ *     `synthesis_agent_run_id`;
+ *   - records a `review_issue_card_ids` snapshot of every pending Issue
+ *     Card id at synthesis time;
+ *   - emits a `draft_iteration_synthesized` audit log.
+ *
+ * Does NOT create any `ContractVersion`. Does NOT decide Issue Cards.
+ */
+export async function aggSynthesizeReviews(
+  state: ProjectState,
+  input: AggSynthesizeReviewsInput,
+  ctx: AggregateContext,
+): Promise<AggregateResult> {
+  assertLawyer(ctx.actor, "aggSynthesizeReviews");
+  if (!state.playbook) throw new Error("playbook missing");
+  const iteration = emptyDraftIterations(state).find((it) => it.id === input.iteration_id);
+  if (!iteration) throw new Error(`draft iteration ${input.iteration_id} not found`);
+  if (iteration.status === "stopped") {
+    throw new Error(`draft iteration ${input.iteration_id} is already stopped`);
+  }
+  const draft = state.contract_versions[state.contract_versions.length - 1];
+  if (!draft) throw new Error("no draft to synthesize reviews against");
+
+  // Only pending Issue Cards are fed to the synthesizer — already-decided
+  // cards reflect the lawyer's authoritative judgment and are excluded
+  // from synthesis (synthesis is a recommendation layer, not a re-decider).
+  const pending = state.issue_cards.filter((c) => c.human_decision === "pending");
+
+  const result = await runReviewSynthesizer({
+    provider: resolveProvider(ctx, "review_synthesizer"),
+    env: ctx.env,
+    input: {
+      project_id: state.project.id,
+      iteration_number: iteration.iteration_number,
+      playbook: state.playbook,
+      draft,
+      pending_issue_cards: pending,
+    },
+  });
+  if (!result.output) {
+    throw new Error(
+      `Review synthesizer failed: ${result.agent_run.error_message ?? "unknown error"}`,
+    );
+  }
+
+  // Provenance guard: the synthesizer's `source_issue_card_ids` must
+  // cover every pending card (LLMs sometimes silently drop items —
+  // we'd lose audit traceability if we let that pass).
+  const expectedIds = new Set(pending.map((c) => c.issue_id));
+  const seenIds = new Set(result.output.source_issue_card_ids);
+  for (const id of expectedIds) {
+    if (!seenIds.has(id)) {
+      throw new Error(
+        `synthesizer dropped pending Issue Card ${id} from source_issue_card_ids ` +
+          `(provenance broken — refusing to persist synthesis)`,
+      );
+    }
+  }
+
+  const providerSummary: DraftIterationProviderSummary = {
+    drafter_provider_id: iteration.provider_summary?.drafter_provider_id ?? null,
+    drafter_mode: iteration.provider_summary?.drafter_mode ?? null,
+    synthesizer_provider_id: result.agent_run.provider_id,
+    synthesizer_mode: result.agent_run.mode,
+    reviewer_run_count:
+      (iteration.provider_summary?.reviewer_run_count ?? 0) +
+      countNewReviewerRuns(state, iteration),
+  };
+
+  const updatedIteration: DraftIteration = {
+    ...iteration,
+    review_issue_card_ids: pending.map((c) => c.issue_id),
+    synthesis_agent_run_id: result.agent_run.id,
+    synthesis_output: result.output as unknown,
+    status: "synthesized",
+    provider_summary: providerSummary,
+  };
+
+  const audit = createAuditLog({
+    project_id: state.project.id,
+    actor: ctx.actor,
+    event_type: "draft_iteration_synthesized",
+    ref_id: iteration.id,
+    payload: {
+      iteration_number: iteration.iteration_number,
+      synthesis_agent_run_id: result.agent_run.id,
+      provider_id: result.agent_run.provider_id,
+      mode: result.agent_run.mode,
+      pending_issue_card_count: pending.length,
+    },
+    env: ctx.env,
+  });
+
+  return {
+    state: {
+      ...state,
+      agent_runs: [...state.agent_runs, result.agent_run],
+      draft_iterations: emptyDraftIterations(state).map((it) =>
+        it.id === iteration.id ? updatedIteration : it,
+      ),
+    },
+    audits: [audit],
+  };
+}
+
+function countNewReviewerRuns(state: ProjectState, _iteration: DraftIteration): number {
+  return state.agent_runs.filter(
+    (r) =>
+      r.role === "counterparty_reviewer" ||
+      r.role === "source_consistency_reviewer" ||
+      r.role === "legal_style_reviewer",
+  ).length;
+}
+
+// ---------- 3. Batch accept review issues ----------
+
+export interface AggBatchAcceptReviewIssuesInput {
+  issue_ids: string[];
+  /** Optional shared reason note carried into each appended history entry. */
+  reason_note?: string;
+}
+
+/**
+ * Convenience action for the solo lawyer: accept a chosen list of
+ * pending Issue Cards in one click. Each card flows through
+ * `aggDecideIssue` so:
+ *
+ *   - `decision_history` gets ONE append per card (reversible by a
+ *     later decision change, NEVER by deletion);
+ *   - one `issue_card_decided` audit log per card;
+ *   - non-lawyer actors are rejected per `decideIssueCard`.
+ *
+ * Additionally:
+ *
+ *   - CRITICAL Issue Cards are REFUSED — the lawyer must decide them
+ *     one at a time so a click cannot auto-accept the most dangerous
+ *     items.
+ *   - Cards already decided (not pending) are silently skipped (the
+ *     lawyer's existing decision wins).
+ *   - Issue ids that don't exist throw immediately (typo guard).
+ *
+ * Emits a single summary `review_issues_batch_accepted` audit log on
+ * top of the per-card audits so the loop UI has a coarse-grained event
+ * to display.
+ */
+export function aggBatchAcceptReviewIssues(
+  state: ProjectState,
+  actor: Actor,
+  input: AggBatchAcceptReviewIssuesInput,
+  env: Env,
+): AggregateResult {
+  assertLawyer(actor, "aggBatchAcceptReviewIssues");
+  if (input.issue_ids.length === 0) {
+    throw new Error("aggBatchAcceptReviewIssues: issue_ids must not be empty");
+  }
+
+  // Guard: every id must exist; critical cards must not be in the batch.
+  for (const id of input.issue_ids) {
+    const card = state.issue_cards.find((c) => c.issue_id === id);
+    if (!card) throw new Error(`Issue Card ${id} not found`);
+    if (card.severity === "critical" && card.human_decision === "pending") {
+      throw new Error(
+        `Issue Card ${id} is CRITICAL — must be decided individually, not via batch accept`,
+      );
+    }
+  }
+
+  let s = state;
+  const allAudits: AuditLog[] = [];
+  const acceptedIds: string[] = [];
+  const skippedIds: string[] = [];
+
+  for (const id of input.issue_ids) {
+    const card = s.issue_cards.find((c) => c.issue_id === id);
+    if (!card) continue; // already validated above
+    if (card.human_decision !== "pending") {
+      skippedIds.push(id);
+      continue;
+    }
+    const res = aggDecideIssue(
+      s,
+      {
+        issue_id: id,
+        decision: "accepted",
+        decided_by: actor,
+        reason_note: input.reason_note,
+      },
+      env,
+    );
+    s = res.state;
+    allAudits.push(...res.audits);
+    acceptedIds.push(id);
+  }
+
+  // Coarse-grained summary audit on top of the per-card audits.
+  const summaryAudit = createAuditLog({
+    project_id: state.project.id,
+    actor,
+    event_type: "review_issues_batch_accepted",
+    ref_id: state.project.id,
+    payload: {
+      requested_ids: input.issue_ids,
+      accepted_ids: acceptedIds,
+      skipped_already_decided_ids: skippedIds,
+      reason_note: input.reason_note ?? null,
+    },
+    env,
+  });
+
+  return {
+    state: s,
+    audits: [...allAudits, summaryAudit],
+  };
+}
+
+// ---------- 4. Stop draft loop ----------
+
+export interface AggStopDraftLoopInput {
+  iteration_id: string;
+  stop_note?: string;
+}
+
+/**
+ * Mark the named iteration `stopped`. Convenience signal from the
+ * solo lawyer that the loop is done for this project — final approval
+ * + exports happen via the existing `aggApproveFinal` / `aggCreateExport`
+ * ops. Lawyer-only.
+ */
+export function aggStopDraftLoop(
+  state: ProjectState,
+  actor: Actor,
+  input: AggStopDraftLoopInput,
+  env: Env,
+): AggregateResult {
+  assertLawyer(actor, "aggStopDraftLoop");
+  const iteration = emptyDraftIterations(state).find((it) => it.id === input.iteration_id);
+  if (!iteration) throw new Error(`draft iteration ${input.iteration_id} not found`);
+  if (iteration.status === "stopped") {
+    throw new Error(`draft iteration ${input.iteration_id} is already stopped`);
+  }
+  const updated: DraftIteration = {
+    ...iteration,
+    status: "stopped",
+    stopped_at: env.now(),
+    stop_note: input.stop_note?.trim() ? input.stop_note.trim() : null,
+  };
+  const audit = createAuditLog({
+    project_id: state.project.id,
+    actor,
+    event_type: "draft_iteration_stopped",
+    ref_id: iteration.id,
+    payload: {
+      iteration_number: iteration.iteration_number,
+      stop_note: updated.stop_note,
+    },
+    env,
+  });
+  return {
+    state: {
+      ...state,
+      draft_iterations: emptyDraftIterations(state).map((it) =>
+        it.id === iteration.id ? updated : it,
+      ),
+    },
+    audits: [audit],
+  };
+}
+
+// Suppress unused-import lint until the synthesis output type is
+// consumed by a downstream helper in P1.5.
+void ({} as RevisionSynthesisOutput);
 
